@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Offline ECU segmentation frame-analysis dashboard">
+  <title>ECU Detection Timeline</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2309161f'/%3E%3Cpath d='M5 23L11 16l5 3 5-10 6 5' fill='none' stroke='%2338d9b0' stroke-width='3'/%3E%3C/svg%3E">
+  <style>
+    :root{color-scheme:dark;--bg:#071117;--panel:#0d1b24;--panel2:#10232e;--line:#203744;--text:#e8f1f5;--muted:#93a9b5;--cyan:#37d6b0;--blue:#56a8ff;--amber:#ffbd59;--red:#ff6b75;--purple:#ba8cff;--grid:#1d3541}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}button,input{font:inherit}
+    header{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--line);background:#091821;position:sticky;top:0;z-index:3}h1{font-size:20px;margin:0;font-weight:600}h2{font-size:15px;margin:0 0 9px;font-weight:600}.sub{color:var(--muted);font-size:13px}.actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.btn{display:inline-flex;align-items:center;gap:7px;border:1px solid #31505e;border-radius:7px;padding:8px 12px;background:#102630;color:var(--text);cursor:pointer}.btn:hover{background:#17343f}.btn.primary{background:var(--cyan);border-color:var(--cyan);color:#03241c;font-weight:600}.btn input{position:absolute;opacity:0;width:1px;height:1px}
+    main{max-width:1600px;margin:auto;padding:16px 22px 32px}.drop{border:1px dashed #3c6675;border-radius:10px;padding:11px 14px;color:var(--muted);background:#0a1820;margin-bottom:14px}.drop.drag{border-color:var(--cyan);color:var(--text);background:#0e282b}
+    .metrics{display:grid;grid-template-columns:repeat(7,minmax(125px,1fr));gap:8px;margin-bottom:14px}.metric{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}.metric .label{color:var(--muted);font-size:12px}.metric .value{font-size:19px;font-variant-numeric:tabular-nums;margin-top:2px}.metric .unit{font-size:12px;color:var(--muted)}
+    .controls{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:11px 14px;margin-bottom:14px}.range-wrap label{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-bottom:4px}.range-wrap input{width:100%;accent-color:var(--cyan)}.range-readout{min-width:165px;text-align:right;font-variant-numeric:tabular-nums}
+    .chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.chart-card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;min-width:0}.chart-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.legend{display:flex;gap:11px;flex-wrap:wrap;color:var(--muted);font-size:12px}.legend span::before{content:"";display:inline-block;width:15px;height:3px;margin:0 5px 3px 0;background:var(--c)}canvas{width:100%;height:235px;display:block;cursor:crosshair}.frame-panel{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:12px}.frame-value{background:var(--panel2);padding:9px 12px;min-width:0}.frame-value .label{font-size:11px;color:var(--muted)}.frame-value .value{font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}.empty{color:var(--muted);padding:55px 20px;text-align:center}
+    @media(max-width:1050px){.metrics{grid-template-columns:repeat(4,1fr)}.chart-grid{grid-template-columns:1fr}.frame-panel{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:650px){header{position:static;align-items:flex-start;flex-direction:column}main{padding:12px}.metrics{grid-template-columns:repeat(2,1fr)}.controls{grid-template-columns:1fr}.range-readout{text-align:left}.frame-panel{grid-template-columns:repeat(2,1fr)}canvas{height:210px}}
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>ECU Detection Timeline</h1><div class="sub" id="fileName">No analysis loaded</div></div>
+    <div class="actions">
+      <label class="btn primary">Open frame CSV<input id="frameFile" type="file" accept=".csv,text/csv"></label>
+      <label class="btn">Open summary CSV<input id="summaryFile" type="file" accept=".csv,text/csv"></label>
+      <button class="btn" id="exampleBtn" type="button">Load example</button>
+    </div>
+  </header>
+  <main>
+    <div class="drop" id="dropZone">Drop <b>frame_analysis.csv</b> here. The run summary is optional; metrics are calculated from frame data when absent.</div>
+    <section class="metrics" aria-label="Run summary">
+      <div class="metric"><div class="label">First detection</div><div class="value" id="mFirst">—</div><div class="unit">frame</div></div>
+      <div class="metric"><div class="label">First stable</div><div class="value" id="mStable">—</div><div class="unit">confirmation frame</div></div>
+      <div class="metric"><div class="label">Stabilization latency</div><div class="value" id="mLatency">—</div><div class="unit">frames / seconds</div></div>
+      <div class="metric"><div class="label">Raw detection rate</div><div class="value" id="mRawRate">—</div><div class="unit">detected / valid</div></div>
+      <div class="metric"><div class="label">Stable coverage</div><div class="value" id="mCoverage">—</div><div class="unit">stable / valid</div></div>
+      <div class="metric"><div class="label">Longest miss</div><div class="value" id="mMiss">—</div><div class="unit">frames</div></div>
+      <div class="metric"><div class="label">Valid frames</div><div class="value" id="mFrames">—</div><div class="unit" id="mDuration">duration —</div></div>
+    </section>
+    <section class="controls" aria-label="Visible frame range">
+      <div class="range-wrap"><label><span>Start frame</span><span id="startLabel">—</span></label><input id="startRange" type="range" min="1" max="2" value="1"></div>
+      <div class="range-wrap"><label><span>End frame</span><span id="endLabel">—</span></label><input id="endRange" type="range" min="1" max="2" value="2"></div>
+      <div class="range-readout" id="visibleCount">No data</div>
+    </section>
+    <section class="chart-grid" id="charts">
+      <article class="chart-card"><div class="chart-head"><h2>Segmentation magnitude</h2><div class="legend"><span style="--c:var(--cyan)">Selected pixels</span><span style="--c:var(--blue)">Largest blob area</span></div></div><canvas id="areaChart" aria-label="Selected pixels and largest blob area by frame"></canvas></article>
+      <article class="chart-card"><div class="chart-head"><h2>Largest blob dimensions</h2><div class="legend"><span style="--c:var(--amber)">Width</span><span style="--c:var(--purple)">Height</span></div></div><canvas id="bboxChart" aria-label="Bounding box width and height by frame"></canvas></article>
+      <article class="chart-card"><div class="chart-head"><h2>Detection state</h2><div class="legend"><span style="--c:var(--blue)">Rolling rate</span><span style="--c:var(--cyan)">Stable</span><span style="--c:var(--amber)">Raw</span></div></div><canvas id="stateChart" aria-label="Raw detection, rolling rate, and stable detection by frame"></canvas></article>
+      <article class="chart-card"><div class="chart-head"><h2>Consecutive misses</h2><div class="legend"><span style="--c:var(--red)">Miss count</span></div></div><canvas id="missChart" aria-label="Consecutive missed detections by frame"></canvas></article>
+    </section>
+    <section class="frame-panel" id="framePanel" aria-live="polite">
+      <div class="frame-value"><div class="label">Frame / timestamp</div><div class="value" id="vFrame">Hover over a chart</div></div>
+      <div class="frame-value"><div class="label">Selected / blob area</div><div class="value" id="vArea">—</div></div>
+      <div class="frame-value"><div class="label">BBox W × H</div><div class="value" id="vBbox">—</div></div>
+      <div class="frame-value"><div class="label">BBox center</div><div class="value" id="vCenter">—</div></div>
+      <div class="frame-value"><div class="label">Raw / rolling / stable</div><div class="value" id="vState">—</div></div>
+      <div class="frame-value"><div class="label">Consecutive miss</div><div class="value" id="vMiss">—</div></div>
+    </section>
+  </main>
+  <script>
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const chartIds = ["areaChart","bboxChart","stateChart","missChart"];
+  let rows = [], summary = {}, hoverIndex = null;
+  const colors = {cyan:"#37d6b0",blue:"#56a8ff",amber:"#ffbd59",red:"#ff6b75",purple:"#ba8cff",grid:"#1d3541",text:"#93a9b5",panel:"#0d1b24"};
+
+  function parseCSV(text){
+    const out=[]; let row=[], field="", quoted=false;
+    for(let i=0;i<text.length;i++){
+      const c=text[i];
+      if(quoted){ if(c==='"'&&text[i+1]==='"'){field+='"';i++;} else if(c==='"'){quoted=false;} else field+=c; }
+      else if(c==='"') quoted=true;
+      else if(c===','){row.push(field);field="";}
+      else if(c==='\n'){row.push(field.replace(/\r$/,""));out.push(row);row=[];field="";}
+      else field+=c;
+    }
+    if(field.length||row.length){row.push(field.replace(/\r$/,""));out.push(row);}
+    const headers=(out.shift()||[]).map(x=>x.trim().replace(/^\uFEFF/,""));
+    return out.filter(r=>r.some(Boolean)).map(r=>Object.fromEntries(headers.map((h,i)=>[h,r[i]??""])));
+  }
+  const num = (v, fallback=0) => v===""||v==null ? fallback : Number(v);
+  function normalize(data){
+    return data.map((r,i)=>({frame:num(r.frame,i+1),timestamp:num(r.timestamp),selected_pixels:num(r.selected_pixels),largest_blob_area:num(r.largest_blob_area),bbox_width:num(r.bbox_width),bbox_height:num(r.bbox_height),bbox_center_x:r.bbox_center_x===""?null:num(r.bbox_center_x),bbox_center_y:r.bbox_center_y===""?null:num(r.bbox_center_y),raw_detected:num(r.raw_detected),rolling_rate:num(r.rolling_rate),stable_detected:num(r.stable_detected),consecutive_miss:num(r.consecutive_miss)})).filter(r=>Number.isFinite(r.frame));
+  }
+  function calculatedSummary(){
+    const first=rows.find(r=>r.raw_detected)?.frame??"";
+    const stable=rows.find(r=>r.stable_detected)?.frame??"";
+    const fps=rows.length>1&&rows.at(-1).timestamp>0?(rows.length-1)/rows.at(-1).timestamp:0;
+    return {first_detection_frame:first,first_stable_detection_frame:stable,stabilization_latency_frames:first!==""&&stable!==""?stable-first:"",stabilization_latency_s:first!==""&&stable!==""&&fps?(stable-first)/fps:"",raw_detection_rate:rows.length?rows.reduce((a,r)=>a+r.raw_detected,0)/rows.length:0,stable_detection_coverage:rows.length?rows.reduce((a,r)=>a+r.stable_detected,0)/rows.length:0,longest_consecutive_miss:Math.max(0,...rows.map(r=>r.consecutive_miss)),valid_frames:rows.length,fps};
+  }
+  function value(key){return summary[key]!==undefined&&summary[key]!==""?summary[key]:calculatedSummary()[key];}
+  function updateMetrics(){
+    const fmtRate=v=>Number.isFinite(Number(v))?(Number(v)*100).toFixed(1)+"%":"—";
+    $("mFirst").textContent=value("first_detection_frame")||"—"; $("mStable").textContent=value("first_stable_detection_frame")||"—";
+    const lf=value("stabilization_latency_frames"),ls=value("stabilization_latency_s");
+    $("mLatency").textContent=lf===""?"—":`${lf} / ${Number(ls).toFixed(3)}`;
+    $("mRawRate").textContent=fmtRate(value("raw_detection_rate")); $("mCoverage").textContent=fmtRate(value("stable_detection_coverage"));
+    $("mMiss").textContent=value("longest_consecutive_miss")??"—"; $("mFrames").textContent=rows.length||"—";
+    $("mDuration").textContent=rows.length?`duration ${rows.at(-1).timestamp.toFixed(2)} s`:"duration —";
+  }
+  function setupRange(){
+    const min=rows[0]?.frame??1,max=rows.at(-1)?.frame??2;
+    for(const id of ["startRange","endRange"]){$(id).min=min;$(id).max=max;}
+    $("startRange").value=min;$("endRange").value=max; updateRangeLabels();
+  }
+  function visibleRows(){const a=num($("startRange").value,1),b=num($("endRange").value,2);return rows.filter(r=>r.frame>=a&&r.frame<=b);}
+  function updateRangeLabels(ev){
+    let a=num($("startRange").value),b=num($("endRange").value); if(a>b){if(ev?.target?.id==="startRange")b=a;else a=b;$("startRange").value=a;$("endRange").value=b;}
+    $("startLabel").textContent=a;$("endLabel").textContent=b;$("visibleCount").textContent=rows.length?`${b-a+1} frames visible`:"No data"; drawAll();
+  }
+  function prepareCanvas(canvas){const dpr=devicePixelRatio||1,w=canvas.clientWidth,h=canvas.clientHeight;canvas.width=w*dpr;canvas.height=h*dpr;const ctx=canvas.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);return {ctx,w,h};}
+  function axes(ctx,w,h,yMax,label){const p={l:54,r:12,t:15,b:30};ctx.strokeStyle=colors.grid;ctx.fillStyle=colors.text;ctx.font="12px system-ui";ctx.lineWidth=1;for(let i=0;i<=4;i++){const y=p.t+(h-p.t-p.b)*i/4;ctx.beginPath();ctx.moveTo(p.l,y);ctx.lineTo(w-p.r,y);ctx.stroke();const v=yMax*(1-i/4);ctx.fillText(v>=1000?v.toFixed(0):v.toFixed(v<2?2:0),5,y+4);}ctx.fillText(label,p.l,11);return p;}
+  function markerLines(ctx,p,w,h,data,xScale){
+    for(const [frame,color,label] of [[Number(value("first_detection_frame")),colors.amber,"First"],[Number(value("first_stable_detection_frame")),colors.cyan,"Stable"]]){if(!Number.isFinite(frame)||frame<data[0].frame||frame>data.at(-1).frame)continue;const x=xScale(frame);ctx.strokeStyle=color;ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(x,p.t);ctx.lineTo(x,h-p.b);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=color;ctx.fillText(label,x+3,p.t+11);}
+  }
+  function line(ctx,data,key,color,xScale,yScale){ctx.strokeStyle=color;ctx.lineWidth=1.6;ctx.beginPath();data.forEach((r,i)=>{const x=xScale(r.frame),y=yScale(r[key]);i?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();}
+  function drawChart(id,series,yMax,label,type="line"){
+    const canvas=$(id),{ctx,w,h}=prepareCanvas(canvas),data=visibleRows();ctx.fillStyle=colors.panel;ctx.fillRect(0,0,w,h);if(!data.length){ctx.fillStyle=colors.text;ctx.fillText("Load a frame-analysis CSV",20,35);return;}
+    yMax=Math.max(yMax||0,1);const p=axes(ctx,w,h,yMax,label),x0=data[0].frame,x1=data.at(-1).frame||x0+1,xScale=x=>p.l+(x-x0)/(x1-x0||1)*(w-p.l-p.r),yScale=y=>h-p.b-(y/yMax)*(h-p.t-p.b);
+    if(type==="state"){
+      const bw=Math.max(1,(w-p.l-p.r)/data.length);for(const r of data){const x=xScale(r.frame);if(r.raw_detected){ctx.fillStyle=colors.amber;ctx.fillRect(x-bw/2,h-p.b-5,bw,5);}if(r.stable_detected){ctx.fillStyle=colors.cyan+"55";ctx.fillRect(x-bw/2,p.t,bw,h-p.t-p.b);}}
+    }
+    series.forEach(s=>line(ctx,data,s.key,s.color,xScale,yScale));markerLines(ctx,p,w,h,data,xScale);
+    ctx.fillStyle=colors.text;ctx.fillText(String(x0),p.l,h-9);ctx.textAlign="right";ctx.fillText(String(x1),w-p.r,h-9);ctx.textAlign="left";ctx.fillText("Frame",w/2-15,h-9);
+    if(hoverIndex!==null){const r=rows[hoverIndex];if(r&&r.frame>=x0&&r.frame<=x1){const x=xScale(r.frame);ctx.strokeStyle="#e8f1f5";ctx.globalAlpha=.7;ctx.beginPath();ctx.moveTo(x,p.t);ctx.lineTo(x,h-p.b);ctx.stroke();ctx.globalAlpha=1;}}
+  }
+  function drawAll(){
+    const data=visibleRows();
+    const maxOf=keys=>data.reduce((m,r)=>Math.max(m,...keys.map(k=>r[k])),1);
+    drawChart("areaChart",[{key:"selected_pixels",color:colors.cyan},{key:"largest_blob_area",color:colors.blue}],maxOf(["selected_pixels","largest_blob_area"]),"Pixels");
+    drawChart("bboxChart",[{key:"bbox_width",color:colors.amber},{key:"bbox_height",color:colors.purple}],maxOf(["bbox_width","bbox_height"]),"Pixels");
+    drawChart("stateChart",[{key:"rolling_rate",color:colors.blue}],1,"Rate", "state");
+    drawChart("missChart",[{key:"consecutive_miss",color:colors.red}],maxOf(["consecutive_miss"]),"Frames");
+  }
+  function showFrame(r){if(!r)return;$("vFrame").textContent=`${r.frame} / ${r.timestamp.toFixed(3)} s`;$("vArea").textContent=`${r.selected_pixels} / ${r.largest_blob_area} px`;$("vBbox").textContent=`${r.bbox_width} × ${r.bbox_height} px`;$("vCenter").textContent=r.bbox_center_x==null?"—":`(${r.bbox_center_x.toFixed(1)}, ${r.bbox_center_y.toFixed(1)})`;$("vState").textContent=`${r.raw_detected} / ${r.rolling_rate.toFixed(3)} / ${r.stable_detected}`;$("vMiss").textContent=r.consecutive_miss;}
+  function chartPointer(event){if(!rows.length)return;const data=visibleRows(),rect=event.currentTarget.getBoundingClientRect(),pL=54,pR=12,x=Math.max(pL,Math.min(rect.width-pR,event.clientX-rect.left)),ratio=(x-pL)/(rect.width-pL-pR),target=data[0].frame+ratio*(data.at(-1).frame-data[0].frame);let best=0,dist=Infinity;rows.forEach((r,i)=>{const d=Math.abs(r.frame-target);if(d<dist){dist=d;best=i;}});hoverIndex=best;showFrame(rows[best]);drawAll();}
+  function loadFrameText(text,name){const parsed=normalize(parseCSV(text));if(!parsed.length||!("frame" in parseCSV(text)[0])){alert("The selected file does not contain valid frame-analysis columns.");return;}rows=parsed;summary={};hoverIndex=null;$("fileName").textContent=`${name} · ${rows.length.toLocaleString()} frames`;setupRange();updateMetrics();drawAll();showFrame(rows[0]);}
+  async function readFile(file,kind){const text=await file.text();if(kind==="frame")loadFrameText(text,file.name);else{const data=parseCSV(text);summary=Object.fromEntries(data.map(r=>[r.metric,r.value]));updateMetrics();drawAll();}}
+  function loadExample(){const n=420;rows=Array.from({length:n},(_,i)=>{const frame=i+1,present=i>42&&Math.sin(i*.21)>-.35,area=present?Math.round(28+17*Math.sin(i*.08)+Math.random()*10):0,stable=i>48&&present;return{frame,timestamp:i/30,selected_pixels:area?area+Math.round(Math.random()*18):0,largest_blob_area:area,bbox_width:area?Math.max(2,Math.round(Math.sqrt(area)*1.3)):0,bbox_height:area?Math.max(2,Math.round(Math.sqrt(area)*.8)):0,bbox_center_x:area?960+Math.sin(i*.025)*240:null,bbox_center_y:area?480+Math.cos(i*.018)*65:null,raw_detected:+present,rolling_rate:i<4?0:[0,1,2,3,4].reduce((a,k)=>a+(i-k>42&&Math.sin((i-k)*.21)>-.35),0)/5,stable_detected:+stable,consecutive_miss:present?0:Math.min(i+1,12)}});summary={};$("fileName").textContent="Example detection run · 420 frames";setupRange();updateMetrics();drawAll();showFrame(rows[0]);}
+  $("frameFile").addEventListener("change",e=>e.target.files[0]&&readFile(e.target.files[0],"frame"));$("summaryFile").addEventListener("change",e=>e.target.files[0]&&readFile(e.target.files[0],"summary"));$("exampleBtn").addEventListener("click",loadExample);$("startRange").addEventListener("input",updateRangeLabels);$("endRange").addEventListener("input",updateRangeLabels);chartIds.forEach(id=>$(id).addEventListener("pointermove",chartPointer));
+  const drop=$("dropZone");["dragenter","dragover"].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.add("drag");}));["dragleave","drop"].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.remove("drag");}));drop.addEventListener("drop",e=>{const file=e.dataTransfer.files[0];if(file)readFile(file,"frame");});
+  new ResizeObserver(drawAll).observe($("charts"));drawAll();
+  </script>
+</body>
+</html>

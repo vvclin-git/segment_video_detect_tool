@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+.uv-cache/
+.uv-python/
+*.assets/
+batch_export_*/
+tmp_ui_check/

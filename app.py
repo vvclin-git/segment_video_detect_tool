@@ -60,6 +60,42 @@ def calculate_stable_states(detections: list[int], window: int, on_count: int,
     return rates, states, misses
 
 
+def find_first_sustained_stable_start(detections: list[int], window: int,
+                                      on_count: int, off_count: int,
+                                      confirm_frames: int) -> int | None:
+    """Return the first frame index of a stable candidate that gets confirmed.
+
+    The returned index is the first frame whose complete rolling window meets
+    the ON threshold for the confirmed run.  It intentionally differs from
+    the first ``stable_detected`` frame, which is delayed by ``confirm_frames``.
+    """
+    history: deque[int] = deque(maxlen=window)
+    stable = False
+    qualifying_streak = 0
+    candidate_start: int | None = None
+    for index, detected in enumerate(detections):
+        history.append(detected)
+        if len(history) < window:
+            continue
+        hit_count = sum(history)
+        if stable:
+            if hit_count <= off_count:
+                stable = False
+                qualifying_streak = 0
+                candidate_start = None
+            continue
+        if hit_count >= on_count:
+            if qualifying_streak == 0:
+                candidate_start = index
+            qualifying_streak += 1
+            if qualifying_streak >= confirm_frames:
+                return candidate_start
+        else:
+            qualifying_streak = 0
+            candidate_start = None
+    return None
+
+
 class HSVVideoTester:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -490,15 +526,73 @@ class HSVVideoTester:
             "roi": self.roi,
             "min_area": self.min_area.get(),
             "analysis_start_frame": start_frame,
+            "window_n": settings[0],
+            "stable_on_m": settings[1],
+            "stable_off_count": settings[2],
+            "stable_confirm_frames": settings[3],
         }
         self.progress.set(100)
         summary = self._summary()
         self.analysis_text.set(
-            f"First: {summary['first_detection_frame']} | First stable: {summary['first_stable_detection_frame']} | "
+            f"First: {summary['first_detection_frame']} | Stable start: "
+            f"{summary['first_sustained_stable_start_frame']} | Stable confirm: "
+            f"{summary['first_stable_confirmation_frame']} | "
             f"Latency: {summary['stabilization_latency_frames']} frames / {summary['stabilization_latency_s']} s | "
             f"Raw rate: {summary['raw_detection_rate']:.3f} | Stable coverage: "
             f"{summary['stable_detection_coverage']:.3f} | Longest miss: {summary['longest_consecutive_miss']}")
         self.status.set(f"Analysis complete: {len(results)} frames")
+
+    def _event_results(self) -> dict[str, FrameResult | None]:
+        """Return the three event frames used by summary and image export."""
+        first_detection = next((r for r in self.last_results if r.raw_detected), None)
+        first_confirmation = next((r for r in self.last_results if r.stable_detected), None)
+        config = self.analysis_config or {}
+        if config:
+            start_index = find_first_sustained_stable_start(
+                [r.raw_detected for r in self.last_results],
+                int(config.get("window_n", self.window_size.get())),
+                int(config.get("stable_on_m", self.stable_on.get())),
+                int(config.get("stable_off_count", self.stable_off.get())),
+                int(config.get("stable_confirm_frames", self.stable_confirm_frames.get())),
+            )
+        else:
+            start_index = None
+        first_sustained_start = (
+            self.last_results[start_index]
+            if start_index is not None and start_index < len(self.last_results)
+            else None
+        )
+        return {
+            "first_detection": first_detection,
+            "first_sustained_stable_start": first_sustained_start,
+            "first_stable_confirmation": first_confirmation,
+        }
+
+    @staticmethod
+    def _event_summary_fields(prefix: str, result: FrameResult | None) -> dict[str, int | float | str]:
+        if result is None:
+            return {
+                f"{prefix}_frame": "",
+                f"{prefix}_timestamp": "",
+                f"{prefix}_bbox_x": "",
+                f"{prefix}_bbox_y": "",
+                f"{prefix}_bbox_width": "",
+                f"{prefix}_bbox_height": "",
+                f"{prefix}_bbox_center_x": "",
+                f"{prefix}_bbox_center_y": "",
+                f"{prefix}_largest_blob_area": "",
+            }
+        return {
+            f"{prefix}_frame": result.frame,
+            f"{prefix}_timestamp": result.timestamp,
+            f"{prefix}_bbox_x": result.bbox_x if result.bbox_x is not None else "",
+            f"{prefix}_bbox_y": result.bbox_y if result.bbox_y is not None else "",
+            f"{prefix}_bbox_width": result.bbox_width,
+            f"{prefix}_bbox_height": result.bbox_height,
+            f"{prefix}_bbox_center_x": result.bbox_center_x if result.bbox_center_x is not None else "",
+            f"{prefix}_bbox_center_y": result.bbox_center_y if result.bbox_center_y is not None else "",
+            f"{prefix}_largest_blob_area": result.largest_blob_area,
+        }
 
     def _summary(self) -> dict[str, int | float | str]:
         first = next((r.frame for r in self.last_results if r.raw_detected), "")
@@ -509,22 +603,29 @@ class HSVVideoTester:
         else:
             latency_frames = latency_s = ""
         total = len(self.last_results)
-        return {"video": self.video_path.name if self.video_path else "", "fps": self.fps,
-                "valid_frames": total, "first_detection_frame": first,
-                "first_stable_detection_frame": first_stable,
-                "stabilization_latency_frames": latency_frames, "stabilization_latency_s": latency_s,
-                "raw_detection_rate": sum(r.raw_detected for r in self.last_results) / total if total else 0.0,
-                "stable_detection_coverage": sum(r.stable_detected for r in self.last_results) / total if total else 0.0,
-                "longest_consecutive_miss": max((r.consecutive_miss for r in self.last_results), default=0),
-                "window_n": self.window_size.get(), "stable_on_m": self.stable_on.get(),
-                "stable_off_count": self.stable_off.get(),
-                "stable_confirm_frames": self.stable_confirm_frames.get(),
-                "min_blob_area": self.min_area.get(),
-                "analysis_start_frame": self.analysis_config.get("analysis_start_frame", 1)
-                if self.analysis_config else 1,
-                "h_min": self.h_min.get(), "h_max": self.h_max.get(), "s_min": self.s_min.get(),
-                "s_max": self.s_max.get(), "v_min": self.v_min.get(), "v_max": self.v_max.get(),
-                "roi": self.roi_text.get().removeprefix("ROI: ")}
+        config = self.analysis_config or {}
+        summary: dict[str, int | float | str] = {
+            "video": self.video_path.name if self.video_path else "", "fps": self.fps,
+            "valid_frames": total, "first_detection_frame": first,
+            "first_stable_detection_frame": first_stable,
+            "stabilization_latency_frames": latency_frames, "stabilization_latency_s": latency_s,
+            "raw_detection_rate": sum(r.raw_detected for r in self.last_results) / total if total else 0.0,
+            "stable_detection_coverage": sum(r.stable_detected for r in self.last_results) / total if total else 0.0,
+            "longest_consecutive_miss": max((r.consecutive_miss for r in self.last_results), default=0),
+            "window_n": int(config.get("window_n", self.window_size.get())),
+            "stable_on_m": int(config.get("stable_on_m", self.stable_on.get())),
+            "stable_off_count": int(config.get("stable_off_count", self.stable_off.get())),
+            "stable_confirm_frames": int(config.get("stable_confirm_frames", self.stable_confirm_frames.get())),
+            "min_blob_area": int(config.get("min_area", self.min_area.get())),
+            "analysis_start_frame": config.get("analysis_start_frame", 1),
+            "h_min": self.h_min.get(), "h_max": self.h_max.get(), "s_min": self.s_min.get(),
+            "s_max": self.s_max.get(), "v_min": self.v_min.get(), "v_max": self.v_max.get(),
+            "roi": self.roi_text.get().removeprefix("ROI: ")}
+        for prefix, result in self._event_results().items():
+            summary.update(self._event_summary_fields(prefix, result))
+        # Keep the original name as an explicit compatibility alias.
+        summary["first_stable_detection_frame"] = summary["first_stable_confirmation_frame"]
+        return summary
 
     def export_csv(self) -> None:
         if not self.last_results:
@@ -551,9 +652,7 @@ class HSVVideoTester:
         if not self.last_results or self.video_path is None or self.analysis_config is None:
             messagebox.showinfo("No results", "Run Analyze Full Video first.")
             return
-        first_raw = next((result for result in self.last_results if result.raw_detected), None)
-        first_stable = next((result for result in self.last_results if result.stable_detected), None)
-        events = (("first_detection", first_raw), ("first_stable", first_stable))
+        events = tuple(self._event_results().items())
         available = [(name, result) for name, result in events if result is not None]
         if not available:
             messagebox.showinfo("No event frames", "No raw or stable detection event was found.")
@@ -569,6 +668,7 @@ class HSVVideoTester:
             messagebox.showerror("Export failed", "Could not reopen the video.")
             return
         saved: list[Path] = []
+        manifest_rows: list[dict[str, object]] = []
         for event_name, result in available:
             capture.set(cv2.CAP_PROP_POS_FRAMES, result.frame - 1)
             ok, raw_frame = capture.read()
@@ -578,16 +678,47 @@ class HSVVideoTester:
             raw_path = output_dir / f"{event_prefix}_raw.png"
             mask_path = output_dir / f"{event_prefix}_mask.png"
             mask = self.create_event_mask(raw_frame, self.analysis_config)
-            if self.write_png(raw_path, raw_frame):
+            raw_saved = self.write_png(raw_path, raw_frame)
+            mask_saved = self.write_png(mask_path, mask)
+            if raw_saved:
                 saved.append(raw_path)
-            if self.write_png(mask_path, mask):
+            if mask_saved:
                 saved.append(mask_path)
+            manifest_rows.append({
+                "event": event_name,
+                "frame": result.frame,
+                "timestamp": result.timestamp,
+                "raw_detected": result.raw_detected,
+                "stable_detected": result.stable_detected,
+                "rolling_rate": result.rolling_rate,
+                "consecutive_miss": result.consecutive_miss,
+                "bbox_x": result.bbox_x if result.bbox_x is not None else "",
+                "bbox_y": result.bbox_y if result.bbox_y is not None else "",
+                "bbox_width": result.bbox_width,
+                "bbox_height": result.bbox_height,
+                "bbox_center_x": result.bbox_center_x if result.bbox_center_x is not None else "",
+                "bbox_center_y": result.bbox_center_y if result.bbox_center_y is not None else "",
+                "largest_blob_area": result.largest_blob_area,
+                "raw_filename": raw_path.name if raw_saved else "",
+                "mask_filename": mask_path.name if mask_saved else "",
+            })
         capture.release()
         if not saved:
             messagebox.showerror("Export failed", "No event images could be written.")
             return
+        manifest_path = output_dir / "event_images_manifest.csv"
+        manifest_fields = (
+            "event", "frame", "timestamp", "raw_detected", "stable_detected",
+            "rolling_rate", "consecutive_miss", "bbox_x", "bbox_y", "bbox_width",
+            "bbox_height", "bbox_center_x", "bbox_center_y", "largest_blob_area",
+            "raw_filename", "mask_filename",
+        )
+        with manifest_path.open("w", newline="", encoding="utf-8-sig") as output:
+            writer = csv.DictWriter(output, fieldnames=manifest_fields)
+            writer.writeheader()
+            writer.writerows(manifest_rows)
         messagebox.showinfo("Event images exported",
-                            f"Saved {len(saved)} PNG files to:\n{output_dir}")
+                            f"Saved {len(saved)} PNG files to:\n{output_dir}\n{manifest_path}")
 
     def _canvas_to_frame(self, canvas_x: int, canvas_y: int) -> tuple[int, int]:
         assert self.frame is not None
@@ -630,6 +761,11 @@ class HSVVideoTester:
 
 
 def main() -> None:
+    import sys
+    if "--single" not in sys.argv:
+        from batch_ui import main as batch_main
+        batch_main()
+        return
     root = tk.Tk()
     app = HSVVideoTester(root)
     root.protocol("WM_DELETE_WINDOW", app.close)
