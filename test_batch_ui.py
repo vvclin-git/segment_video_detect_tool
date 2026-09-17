@@ -31,6 +31,7 @@ class DesktopWorkflowTests(unittest.TestCase):
     def tearDown(self):
         if self.app.editor:
             self.app.editor.close()
+        self.root.update_idletasks()
         self.root.destroy()
         self.temp.cleanup()
 
@@ -113,6 +114,57 @@ class DesktopWorkflowTests(unittest.TestCase):
         self.wait_worker()
         self.assertEqual(self.item["status"], "cancelled")
         self.assertEqual(self.item["latest_run"]["run_id"], old_run)
+
+    def test_each_video_settings_saved_and_restored_in_editor(self):
+        second_path = self.folder / "second.avi"
+        synthetic_video(second_path, [0, 1] * 20)
+        second = core.new_item(second_path)
+        self.app.project["items"].append(second)
+        self.app.changed()
+        configs = [
+            dict(lower=[150, 100, 60], upper=[178, 240, 250], min_area=31, roi=[10, 12, 75, 60],
+                 start_percent=12.5, end_percent=87.5, window_n=7, stable_on_m=5,
+                 stable_off_count=2, stable_confirm_frames=4),
+            dict(lower=[120, 80, 40], upper=[170, 230, 245], min_area=85, roi=[2, 3, 45, 55],
+                 start_percent=25.0, end_percent=95.0, window_n=9, stable_on_m=7,
+                 stable_off_count=1, stable_confirm_frames=2)]
+        for item, config in zip((self.item, second), configs):
+            self.app.open_editor(item)
+            self.root.update()
+            editor = self.app.editor
+            for variables, key in (((editor.h_min, editor.s_min, editor.v_min), "lower"),
+                                   ((editor.h_max, editor.s_max, editor.v_max), "upper")):
+                for variable, value in zip(variables, config[key]):
+                    variable.set(value)
+            for variable, key in ((editor.min_area, "min_area"), (editor.window_size, "window_n"),
+                                   (editor.stable_on, "stable_on_m"), (editor.stable_off, "stable_off_count"),
+                                   (editor.stable_confirm_frames, "stable_confirm_frames"),
+                                   (editor.start_percent, "start_percent"), (editor.end_percent, "end_percent")):
+                variable.set(config[key])
+            editor.roi = tuple(config["roi"])
+            editor.close()  # Closing settings applies and saves this item's complete config.
+        path = self.app.project_path
+        self.app.new()
+        self.assertFalse(self.app.project["items"])
+        with patch("batch_ui.filedialog.askopenfilename", return_value=str(path)):
+            self.app.open()
+        for item, expected in zip(self.app.project["items"], configs):
+            self.assertEqual(item["settings"], expected)
+            self.app.open_editor(item)
+            self.root.update()
+            self.assertEqual(self.app.editor.config(), expected)
+            self.app.editor.close()
+        self.assertFalse(self.errors, self.errors)
+
+    def test_settings_do_not_claim_persisted_when_disk_write_fails(self):
+        self.app.open_editor(self.item)
+        self.root.update()
+        self.app.editor.min_area.set(99)
+        with patch("batch_core.save_project", side_effect=OSError("write failed")):
+            self.app.editor.save()
+        self.assertTrue(self.app.dirty)
+        self.assertIn("尚未寫入檔案", self.app.editor.settings_state.get())
+        self.assertNotEqual(core.load_project(self.app.project_path)["items"][0]["settings"]["min_area"], 99)
 
 
 if __name__ == "__main__":

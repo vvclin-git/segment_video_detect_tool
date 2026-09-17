@@ -395,7 +395,8 @@ class VideoEditor(HSVVideoTester):
             self.item.update(settings=self.config(), session=self.session.get(), camera=self.camera_name.get(),
                              segment=self.segment_name.get())
             self.owner.changed()
-            self.settings_state.set("已套用至專案" + ("並儲存" if self.owner.project_path else "；請儲存專案"))
+            persisted = self.owner.project_path is not None and not self.owner.dirty
+            self.settings_state.set("已套用至專案" + ("並儲存" if persisted else "；尚未寫入檔案，請儲存專案"))
             return True
         except (ValueError, OSError, tk.TclError) as exc:
             error(self.root, exc)
