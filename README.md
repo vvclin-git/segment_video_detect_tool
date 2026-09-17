@@ -44,6 +44,10 @@ uv run python app.py
 
 「匯入 pairing.json」支援 `runs[].cameraMatches` 中的場次／相機對應，使用 `runStartInVideoSec`／`runEndInVideoSec` 與 duration 換算分析起訖百分比。每個場次 × 相機建立獨立工作項目。
 
+同時匯入每個 run 的 `scenarioId`（亦接受 `scenarioID`）、`phase`、`note`。影片清單提供 **scenarioID / phase / note** 三欄，點選列可在下方閱讀完整備註；結果頁與設定／複核視窗也顯示相同情境資訊，批次總表一併匯出。原始 run ID 保留於專案供配對識別，不再當作顯示區段。
+
+已用舊版匯入的專案，請再匯入一次原 pairing.json：相同 run／相機會補上或更新情境資訊，不重複新增影片，保留原本 ROI、threshold、分析結果與人工標註。舊版專案未保存這三個欄位，因此需從 pairing.json 補回；沒有提供的資訊顯示「—」。
+
 可選本機影片根目錄重新尋找檔案：只有檔名唯一吻合時才自動重連；同名多筆不任選，保留缺檔狀態。可選中工作項目後「重新指定影片」。配對資料即使尚未 confirmed 仍可匯入，使用前請檢查影片、場次、ROI 及分析範圍。工具不讀取距離或速度作為判定依據。
 
 ### 判定規則

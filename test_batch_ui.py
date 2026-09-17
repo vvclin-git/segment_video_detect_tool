@@ -166,6 +166,27 @@ class DesktopWorkflowTests(unittest.TestCase):
         self.assertIn("尚未寫入檔案", self.app.editor.settings_state.get())
         self.assertNotEqual(core.load_project(self.app.project_path)["items"][0]["settings"]["min_area"], 99)
 
+    def test_pairing_scenario_fields_visible_in_list_results_and_preview(self):
+        self.item.update(scenario_id=0, phase="P2", note="逆光測試／5kt")
+        self.app.changed()
+        self.root.update()
+        self.assertEqual(self.app.table.set(self.item["id"], "scenario"), "0")
+        self.assertEqual(self.app.table.set(self.item["id"], "phase"), "P2")
+        self.assertEqual(self.app.table.set(self.item["id"], "note"), "逆光測試／5kt")
+        def labels(widget):
+            result = []
+            if widget.winfo_class() == "TLabel":
+                result.append(str(widget.cget("text")))
+            for child in widget.winfo_children():
+                result.extend(labels(child))
+            return result
+        expected = "scenarioID: 0 / phase: P2 / note: 逆光測試／5kt"
+        self.assertIn(expected, labels(self.app.result_body))
+        self.app.open_editor(self.item)
+        self.root.update()
+        self.assertIn(expected, labels(self.app.editor.root))
+        self.assertFalse(self.errors, self.errors)
+
 
 if __name__ == "__main__":
     unittest.main()

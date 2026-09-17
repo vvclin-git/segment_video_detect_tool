@@ -210,6 +210,7 @@ class BatchWorkflowTests(unittest.TestCase):
     def test_pairing_import_and_relocation(self):
         path = self.root / "pairing.json"
         core.atomic_json(path, dict(cameras=[dict(id="cam", name="Camera 1")], runs=[dict(id="run1", sequence=4,
+            scenarioId=3, phase="P1", note="逆光／5kt",
             cameraMatches=dict(cam=dict(path="D:\\old\\測試.avi", duration=1.1,
                                        runStartInVideoSec=.2, runEndInVideoSec=1.0)))]))
         imported = core.import_pairing(path, self.root)
@@ -217,7 +218,45 @@ class BatchWorkflowTests(unittest.TestCase):
         self.assertEqual(imported[0]["path"], str(self.path.resolve()))
         self.assertEqual(imported[0]["camera"], "Camera 1")
         self.assertEqual(imported[0]["session"], "4")
+        self.assertEqual(imported[0]["scenario_id"], 3)
+        self.assertEqual(imported[0]["phase"], "P1")
+        self.assertEqual(imported[0]["note"], "逆光／5kt")
+        self.assertEqual(imported[0]["segment"], "")
+        self.assertEqual(imported[0]["pairing_run_id"], "run1")
+        project = core.new_project()
+        project["items"] = imported
+        core.save_project(self.root / "project.json", project)
+        restored = core.load_project(self.root / "project.json")["items"][0]
+        self.assertEqual(restored["note"], "逆光／5kt")
+        out, _ = core.export_batch([restored], self.root)
+        with (out / "batch_summary.csv").open(encoding="utf-8-sig") as source:
+            exported = next(csv.DictReader(source))
+        self.assertEqual((exported["scenarioID"], exported["phase"], exported["note"]), ("3", "P1", "逆光／5kt"))
         self.assertAlmostEqual(imported[0]["settings"]["start_percent"], 100 * .2 / 1.1)
+
+    def test_pairing_refresh_preserves_legacy_settings_results_and_annotations(self):
+        self.analyze()
+        core.set_manual_event(self.item, "manual_first_detection", 3)
+        self.item.update(segment="run1", camera="Camera 1", pairing_match={"path": str(self.path)})
+        self.item["settings"]["min_area"] = 99
+        before = copy.deepcopy(self.item)
+        incoming = core.new_item(self.path, scenario_id=7, phase="P2", note="新情境",
+                                 pairing_run_id="run1", pairing_camera_id="cam1", camera="Camera 1",
+                                 pairing_run={"id": "run1"}, pairing_match={"path": str(self.path)})
+        project = core.new_project()
+        project["items"] = [self.item]
+        self.assertEqual(core.merge_pairing_items(project, [incoming]), (0, 1))
+        for field in ("id", "path", "settings", "latest_run", "runs", "manual_events"):
+            self.assertEqual(self.item[field], before[field])
+        self.assertEqual(self.item["segment"], "")
+        self.assertEqual(self.item["scenario_id"], 7)
+        incoming["note"] = "更新備註"
+        self.assertEqual(core.merge_pairing_items(project, [incoming]), (0, 1))
+        self.assertEqual(len(project["items"]), 1)
+        self.assertEqual(self.item["note"], "更新備註")
+        other = copy.deepcopy(incoming)
+        other.update(id=core.uid(), pairing_run_id="run2")
+        self.assertEqual(core.merge_pairing_items(project, [other]), (1, 0))
 
     def test_missing_result_files_are_reported_and_recomputed(self):
         run = self.analyze()

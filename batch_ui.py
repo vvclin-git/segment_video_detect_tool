@@ -25,6 +25,17 @@ def error(parent, exc):
     messagebox.showerror("無法完成操作", str(exc), parent=parent)
 
 
+def scenario_text(item):
+    values = [str(item.get(key)) if item.get(key) not in (None, "") else "—"
+              for key in ("scenario_id", "phase", "note")]
+    return f"scenarioID: {values[0]} / phase: {values[1]} / note: {values[2]}"
+
+
+def segment_text(item):
+    # Older pairing imports used the opaque run ID as the visible segment label.
+    return "" if item.get("pairing_match") and not item.get("pairing_run_id") else item.get("segment", "")
+
+
 def bbox_text(summary, prefix):
     if not summary.get(prefix + "_bbox_valid"):
         return "無 bbox"
@@ -99,6 +110,7 @@ class VideoEditor(HSVVideoTester):
         self.settings_state = tk.StringVar(value="使用已儲存設定")
         bar = ttk.Frame(self.root, padding=8)
         bar.pack(fill="x")
+        ttk.Label(self.root, text=scenario_text(self.item), wraplength=1250, padding=(10, 3)).pack(fill="x")
         for title, callback in (("播放／暫停", self.toggle_play), ("◀ 上一幀", lambda: self.step(-1)),
                                 ("下一幀 ▶", lambda: self.step(1))):
             ttk.Button(bar, text=title, command=callback).pack(side="left", padx=3)
@@ -602,15 +614,18 @@ class BatchApp:
                                 ("取消勾選", lambda: self.select_all(False)), ("套用設定…", self.copy_settings),
                                 ("複製為新區段", self.duplicate), ("重新指定影片", self.relink), ("移除勾選", self.remove)):
             self.button(tools, label, callback)
-        columns = ("selected", "name", "session", "camera", "range", "status", "outcome")
+        columns = ("selected", "name", "scenario", "phase", "note", "session", "camera", "range", "status", "outcome")
         table_frame = ttk.Frame(self.setup_tab)
         table_frame.pack(fill="both", expand=True)
         self.table = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
-        for key, title, width in zip(columns, ("勾選", "影片／區段", "場次", "相機", "分析 %", "執行狀態", "分析結論"), (48, 390, 80, 110, 110, 110, 190)):
+        for key, title, width in zip(columns, ("勾選", "影片／區段", "scenarioID", "phase", "note", "場次", "相機", "分析 %", "執行狀態", "分析結論"),
+                                     (48, 250, 90, 70, 220, 60, 100, 95, 100, 150)):
             self.table.heading(key, text=title)
-            self.table.column(key, width=width, minwidth=40, stretch=key in ("name", "outcome"))
+            self.table.column(key, width=width, minwidth=40, stretch=key in ("name", "note", "outcome"))
         scroll = ttk.Scrollbar(table_frame, command=self.table.yview)
-        self.table.configure(yscrollcommand=scroll.set)
+        horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=self.table.xview)
+        horizontal.pack(side="bottom", fill="x")
+        self.table.configure(yscrollcommand=scroll.set, xscrollcommand=horizontal.set)
         self.table.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         self.table.bind("<Button-1>", self.toggle_selection)
@@ -758,9 +773,9 @@ class BatchApp:
         folder = filedialog.askdirectory(parent=self.root, title="影片根目錄（可取消，使用 JSON 原始路徑）")
         try:
             imported = core.import_pairing(path, folder or None)
-            self.project["items"].extend(imported)
+            added, updated = core.merge_pairing_items(self.project, imported)
             self.changed()
-            self.message.set(f"匯入 {len(imported)} 個場次 × 相機工作項目；請確認配對、ROI 與分析起訖，缺檔可重新指定影片。")
+            self.message.set(f"新增 {added} 項、更新 {updated} 項情境資訊（scenarioID / phase / note）；既有設定、分析結果及人工標註保留。")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             error(self.root, exc)
 
@@ -778,7 +793,7 @@ class BatchApp:
     def show_item_info(self, _=None):
         item = self.focused()
         if item:
-            self.item_info.set(item["path"] + ("\n" + item["error"] if item.get("error") else ""))
+            self.item_info.set(scenario_text(item) + "\n" + item["path"] + ("\n" + item["error"] if item.get("error") else ""))
 
     def edit_focused(self):
         item = self.focused()
@@ -1029,7 +1044,9 @@ class BatchApp:
             outcome = OUTCOME.get(run["summary"]["detection_outcome"], "") if run else "—"
             if core.stale_reason(item):
                 outcome += " · 結果過期"
-            values = ("☑" if self.selected[ident].get() else "☐", item["name"] + (" · " + item["segment"] if item.get("segment") else ""),
+            segment = segment_text(item)
+            values = ("☑" if self.selected[ident].get() else "☐", item["name"] + (" · " + segment if segment else ""),
+                      item.get("scenario_id", ""), item.get("phase", ""), item.get("note", ""),
                       item["session"], item["camera"], f'{s["start_percent"]:.1f}–{s["end_percent"]:.1f}', STATUS[item["status"]], outcome)
             if ident in current:
                 self.table.item(ident, values=values)
@@ -1067,7 +1084,8 @@ class BatchApp:
             title.pack(fill="x")
             ttk.Checkbutton(title, variable=self.selected[item["id"]], command=self.refresh_table).pack(side="left", anchor="n")
             ttk.Label(title, text=item["name"], wraplength=285, font=("Segoe UI", 10, "bold")).pack(side="left", anchor="w")
-            ttk.Label(left, text=f'{item["session"] or "—"} / {item["camera"] or "—"}  {item.get("segment", "")}', wraplength=310).pack(anchor="w")
+            ttk.Label(left, text=scenario_text(item), wraplength=310).pack(anchor="w")
+            ttk.Label(left, text=f'{item["session"] or "—"} / {item["camera"] or "—"}  {segment_text(item)}', wraplength=310).pack(anchor="w")
             ttk.Label(left, text=f'{STATUS[item["status"]]} · {outcome}' + (" · 過期：" + stale if stale else ""),
                       foreground="#9d5814" if stale else "#365966", wraplength=310).pack(anchor="w", pady=3)
             if run:

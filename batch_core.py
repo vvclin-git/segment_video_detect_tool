@@ -66,6 +66,8 @@ def load_project(path):
         seen.add(item["id"])
         validate_settings(item["settings"])
         item.setdefault("manual_events", {})
+        for key in ("scenario_id", "phase", "note"):
+            item.setdefault(key, "")
         if item.get("status") in ("running", "queued"):
             item.update(status="cancelled", error="上次執行中斷；請重新分析")
     return project
@@ -103,7 +105,7 @@ def probe_video(path):
 
 def new_item(path, **labels):
     item = dict(id=uid(), path=str(Path(path).resolve()), name=Path(path).name,
-                session="", camera="", segment="", settings=copy.deepcopy(DEFAULTS),
+                session="", camera="", segment="", scenario_id="", phase="", note="", settings=copy.deepcopy(DEFAULTS),
                 status="pending", error="", runs=[], manual_events={})
     item.update(labels)
     try:
@@ -388,6 +390,7 @@ def export_batch(items, parent, progress=None):
         run = item.get("latest_run")
         summary = dict(item_id=item["id"], video=item["name"], source_path=item["path"],
                        session=item["session"], camera=item["camera"], segment=item.get("segment", ""),
+                       scenarioID=item.get("scenario_id", ""), phase=item.get("phase", ""), note=item.get("note", ""),
                        execution_status=item["status"], error=item.get("error", ""), stale=stale_reason(item),
                        run_id=run["run_id"] if run else "", export_status="no_results", export_error="")
         summaries.append(summary)
@@ -515,8 +518,11 @@ def import_pairing(path, video_root=None):
                 matches = candidates.get(basename.casefold(), [])
                 if len(matches) == 1:
                     source = matches[0]
-            item = new_item(source, session=str(run.get("sequence", run.get("id", ""))),
-                            camera=cameras.get(camera, camera), segment=str(run.get("id", "")),
+            item = new_item(source, session=str(run.get("sequence", "")),
+                            camera=cameras.get(camera, camera), pairing_run_id=str(run.get("id", "")),
+                            pairing_camera_id=camera, scenario_id=run.get("scenarioId", run.get("scenarioID", "")),
+                            phase=run.get("phase", ""), note=run.get("note", ""),
+                            pairing_run=copy.deepcopy({k: v for k, v in run.items() if k != "cameraMatches"}),
                             pairing_match=copy.deepcopy(match))
             duration = match.get("duration")
             if isinstance(duration, (int, float)) and duration > 0:
@@ -526,3 +532,26 @@ def import_pairing(path, video_root=None):
                     item["settings"].update(start_percent=start, end_percent=end)
             items.append(item)
     return items
+
+
+def merge_pairing_items(project, imported):
+    """Refresh pairing labels without replacing reviewed settings, events or runs."""
+    added = updated = 0
+    fields = ("scenario_id", "phase", "note", "pairing_run_id", "pairing_camera_id", "pairing_run", "pairing_match")
+    for incoming in imported:
+        matches = [item for item in project["items"] if item.get("pairing_match") and
+                   incoming["pairing_run_id"] and
+                   item.get("pairing_run_id", item.get("segment", "")) == incoming["pairing_run_id"] and
+                   (item.get("pairing_camera_id") == incoming["pairing_camera_id"] if item.get("pairing_camera_id")
+                    else item.get("camera") == incoming["camera"])]
+        if matches:
+            for item in matches:
+                legacy_segment = "pairing_run_id" not in item and item.get("segment") == incoming["pairing_run_id"]
+                item.update({key: copy.deepcopy(incoming[key]) for key in fields})
+                if legacy_segment:
+                    item["segment"] = ""
+                updated += 1
+        else:
+            project["items"].append(incoming)
+            added += 1
+    return added, updated
