@@ -281,6 +281,15 @@ class VideoEditor(HSVVideoTester):
         scale.configure(command=slide)
         variable.trace_add("write", typed)
 
+    def _frame_settings(self):
+        """Freeze the analysis snapshot for review viewers and exports."""
+        if self.review:
+            settings = self.initial
+            return dict(lower=list(settings["lower"]), upper=list(settings["upper"]),
+                        min_area=settings["min_area"],
+                        roi=tuple(settings["roi"]) if settings.get("roi") else None)
+        return super()._frame_settings()
+
     def manual_key(self):
         return next(key for key, label in core.MANUAL_EVENTS.items() if label == self.manual_kind.get())
 

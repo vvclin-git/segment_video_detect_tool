@@ -13,14 +13,14 @@ from test_batch import synthetic_video
 
 class FrameOutputTests(unittest.TestCase):
     def test_modes_keep_original_resolution_and_plain_original_pixels(self):
-        frame = np.zeros((36, 52, 3), np.uint8)
-        frame[8:20, 14:29] = (20, 80, 180)
+        frame = np.zeros((300, 400, 3), np.uint8)
+        frame[80:140, 140:220] = (20, 80, 180)
         settings = dict(lower=[0, 0, 0], upper=[179, 255, 255], min_area=10, roi=None)
         original = core.compose_frame(frame, settings, "Original")
         np.testing.assert_array_equal(original, frame)
         for mode in ("Original", "Mask", "Overlay"):
             image = core.compose_frame(frame, settings, mode,
-                                       boxes=[(14, 8, 15, 12, 180)],
+                                       boxes=[(140, 80, 80, 60, 4800)],
                                        selected_indices=[0], include_bbox=True)
             self.assertEqual(image.shape, frame.shape)
         self.assertEqual(core.frame_filename("scene.mp4", 123, "Mask", False),

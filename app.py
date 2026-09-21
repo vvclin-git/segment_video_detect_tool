@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import copy
 import tkinter as tk
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -11,7 +12,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from frame_render import IMAGE_MODES, compose_frame, frame_filename, write_png
+from frame_render import (DEFAULT_BBOX_STYLE, IMAGE_MODES, LABEL_MODE_NAMES,
+                          BboxStyle, compose_frame,
+                          frame_filename, segment_frame, validate_bbox_style,
+                          write_png)
 
 
 @dataclass
@@ -34,7 +38,7 @@ class FrameResult:
 
 @dataclass
 class FrameSnapshot:
-    """Immutable-in-practice data captured when a fixed frame window opens."""
+    """State needed to recreate a single-frame export or independent view."""
 
     video_name: str
     frame_number: int
@@ -42,42 +46,82 @@ class FrameSnapshot:
     settings: dict[str, object]
     boxes: tuple[tuple[int, int, int, int, int], ...]
     selected_indices: tuple[int, ...]
+    source_path: Path | None = None
+    frame_count: int = 1
+    fps: float = 30.0
+    view_mode: str = "Original"
+    include_bbox: bool = False
+    bbox_style: BboxStyle = DEFAULT_BBOX_STYLE
 
 
 class FrameViewer:
-    """Independent, zoomable view of one captured frame."""
+    """Independent, zoomable and navigable view of a video frame."""
 
     def __init__(self, owner: "HSVVideoTester", snapshot: FrameSnapshot):
         self.owner = owner
-        self.snapshot = snapshot
-        self.root = tk.Toplevel(owner.root)
-        self.root.title(f"{snapshot.video_name} · Frame {snapshot.frame_number}")
-        self.root.geometry("980x720")
-        self.root.minsize(520, 360)
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
-        self.view_mode = tk.StringVar(value="Original")
-        self.include_bbox = tk.BooleanVar(value=False)
+        self.source_path = Path(snapshot.source_path) if snapshot.source_path else None
+        self.video_name = snapshot.video_name
+        self.settings = copy.deepcopy(snapshot.settings)
+        self.frame_count = max(1, int(snapshot.frame_count))
+        self.fps = float(snapshot.fps or 30.0)
+        self.capture: cv2.VideoCapture | None = None
+        self.frame_index = int(snapshot.frame_number) - 1
+        self.frame = snapshot.frame.copy()
+        self.boxes = list(snapshot.boxes)
+        self.selected_bboxes = set(int(i) for i in snapshot.selected_indices)
+        self.view_mode = tk.StringVar(value=snapshot.view_mode)
+        self.include_bbox = tk.BooleanVar(value=bool(snapshot.include_bbox and self.selected_bboxes))
+        self.style = validate_bbox_style(snapshot.bbox_style)
         self.zoom = 1.0
         self.fit_mode = True
         self.pan = [0.0, 0.0]
         self.drag_start = None
         self.photo = None
+        self.style_error = tk.StringVar()
+        self.frame_status = tk.StringVar()
+        self._closed = False
+        self.root = tk.Toplevel(owner.root)
+        self.root.title(f"{self.video_name} · Frame {snapshot.frame_number}")
+        self.root.geometry("1200x780")
+        self.root.minsize(760, 520)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self._build_ui()
+        if self.source_path is not None:
+            self.capture = cv2.VideoCapture(str(self.source_path))
+            if not self.capture.isOpened():
+                self.capture.release()
+                self.capture = None
+                self.style_error.set("無法開啟獨立視窗的影片解碼器；保留開啟時的有效畫面。")
+            else:
+                # Metadata is captured at open time and never follows the
+                # owner's decoder or its later source/settings changes.
+                self.frame_count = max(1, int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT)) or self.frame_count)
+                self.fps = float(self.capture.get(cv2.CAP_PROP_FPS) or self.fps)
+        owner.frame_viewers.append(self)
+        self._update_frame_controls()
+        self.root.after_idle(self.fit)
+
+    def _build_ui(self) -> None:
         toolbar = ttk.Frame(self.root, padding=7)
         toolbar.pack(fill=tk.X)
         ttk.Label(toolbar, text="模式").pack(side=tk.LEFT)
-        ttk.Combobox(toolbar, textvariable=self.view_mode, values=IMAGE_MODES,
-                     state="readonly", width=10).pack(side=tk.LEFT, padx=(4, 10))
+        mode = ttk.Combobox(toolbar, textvariable=self.view_mode, values=IMAGE_MODES,
+                             state="readonly", width=10)
+        mode.pack(side=tk.LEFT, padx=(4, 10))
         self.view_mode.trace_add("write", lambda *_: self.render())
-        check = ttk.Checkbutton(toolbar, text="包含選取 bbox", variable=self.include_bbox,
-                                command=self.render)
-        check.pack(side=tk.LEFT)
-        if not snapshot.selected_indices:
-            check.configure(state="disabled")
+        self.bbox_check = ttk.Checkbutton(toolbar, text="包含選取 bbox",
+                                          variable=self.include_bbox, command=self.render)
+        self.bbox_check.pack(side=tk.LEFT)
         ttk.Button(toolbar, text="符合視窗", command=self.fit).pack(side=tk.LEFT, padx=(14, 3))
         ttk.Button(toolbar, text="100%", command=self.original_size).pack(side=tk.LEFT, padx=3)
         ttk.Button(toolbar, text="匯出 PNG…", command=self.export).pack(side=tk.RIGHT, padx=3)
-        self.canvas = tk.Canvas(self.root, bg="#142029", highlightthickness=0,
-                                cursor="fleur")
+
+        body = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True)
+        left, right = ttk.Frame(body), ttk.Frame(body, width=330)
+        body.add(left, weight=4)
+        body.add(right, weight=1)
+        self.canvas = tk.Canvas(left, bg="#142029", highlightthickness=0, cursor="fleur")
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.canvas.bind("<Configure>", lambda _event: self.render())
         self.canvas.bind("<ButtonPress-1>", self.press)
@@ -86,18 +130,159 @@ class FrameViewer:
         self.canvas.bind("<MouseWheel>", self.wheel)
         self.canvas.bind("<Button-4>", lambda event: self.zoom_by(1.15, event.x, event.y))
         self.canvas.bind("<Button-5>", lambda event: self.zoom_by(1 / 1.15, event.x, event.y))
+        # Navigation bindings belong to the image only.  Entries and the
+        # read-only mode selector therefore retain their native arrow keys.
+        self.canvas.bind("<KeyPress-Left>", lambda _event: self.step(-1))
+        self.canvas.bind("<KeyPress-Right>", lambda _event: self.step(1))
         self.root.bind("<Escape>", lambda _event: self.close())
-        owner.frame_viewers.append(self)
-        self.root.after_idle(self.fit)
+        self._build_style_controls(right)
+        self._build_bbox_controls(right)
+        self._update_bbox_tree()
+        self.status = ttk.Label(right, textvariable=self.frame_status, wraplength=300)
+        self.status.pack(fill=tk.X, padx=8, pady=(5, 8))
+        navigation = ttk.Frame(left, padding=5)
+        navigation.pack(fill=tk.X)
+        ttk.Button(navigation, text="◀ 上一幀", command=lambda: self.step(-1)).pack(side=tk.LEFT)
+        ttk.Button(navigation, text="下一幀 ▶", command=lambda: self.step(1)).pack(side=tk.LEFT, padx=4)
+        ttk.Label(navigation, textvariable=self.frame_status).pack(side=tk.LEFT, padx=8)
+
+    def _build_style_controls(self, parent: ttk.Widget) -> None:
+        group = ttk.LabelFrame(parent, text="bbox 出圖樣式", padding=7)
+        group.pack(fill=tk.X, padx=8, pady=(8, 4))
+        self.style_vars = {
+            "color": tk.StringVar(value=self.style.color),
+            "line_width": tk.StringVar(value=str(self.style.line_width)),
+            "font_size": tk.StringVar(value=str(self.style.font_size)),
+            "label_mode": tk.StringVar(value=LABEL_MODE_NAMES[self.style.label_mode]),
+        }
+        fields = (("框線／文字色", "color"), ("線寬 px", "line_width"), ("字體 px", "font_size"))
+        for label, key in fields:
+            row = ttk.Frame(group)
+            row.pack(fill=tk.X, pady=2)
+            ttk.Label(row, text=label, width=11).pack(side=tk.LEFT)
+            entry = ttk.Entry(row, textvariable=self.style_vars[key], width=14)
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            entry.bind("<Return>", lambda _event: self.apply_style())
+            entry.bind("<FocusOut>", lambda _event: self.apply_style())
+        row = ttk.Frame(group)
+        row.pack(fill=tk.X, pady=2)
+        ttk.Label(row, text="標籤內容", width=11).pack(side=tk.LEFT)
+        mode = ttk.Combobox(row, textvariable=self.style_vars["label_mode"],
+                            values=tuple(LABEL_MODE_NAMES.values()), state="readonly", width=16)
+        mode.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        mode.bind("<<ComboboxSelected>>", lambda _event: self.apply_style())
+        ttk.Button(group, text="恢復預設", command=self.reset_style).pack(anchor=tk.W, pady=(5, 0))
+        ttk.Label(group, textvariable=self.style_error, foreground="#b3261e",
+                  wraplength=285).pack(fill=tk.X, pady=(4, 0))
+
+    def _build_bbox_controls(self, parent: ttk.Widget) -> None:
+        group = ttk.LabelFrame(parent, text="目前幀 bbox（可多選）", padding=7)
+        group.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        self.bbox_tree = ttk.Treeview(group, columns=("id", "x", "y", "w", "h"),
+                                      show="headings", selectmode="extended", height=7)
+        for key, width in (("id", 35), ("x", 52), ("y", 52), ("w", 52), ("h", 52)):
+            self.bbox_tree.heading(key, text=key.upper())
+            self.bbox_tree.column(key, width=width, anchor=tk.CENTER)
+        self.bbox_tree.pack(fill=tk.BOTH, expand=True)
+        self.bbox_tree.bind("<<TreeviewSelect>>", self._bbox_tree_selection)
+        tools = ttk.Frame(group)
+        tools.pack(fill=tk.X, pady=(5, 0))
+        ttk.Button(tools, text="全選", command=self.select_all_bboxes).pack(side=tk.LEFT)
+        ttk.Button(tools, text="清除", command=self.clear_bbox_selection).pack(side=tk.LEFT, padx=4)
+
+    def _style_from_controls(self) -> BboxStyle:
+        label_name = self.style_vars["label_mode"].get()
+        label_mode = next((key for key, name in LABEL_MODE_NAMES.items() if name == label_name), label_name)
+        return validate_bbox_style({"color": self.style_vars["color"].get(),
+                                    "line_width": self.style_vars["line_width"].get(),
+                                    "font_size": self.style_vars["font_size"].get(),
+                                    "label_mode": label_mode})
+
+    def apply_style(self) -> bool:
+        try:
+            self.style = self._style_from_controls()
+        except ValueError as exc:
+            self.style_error.set(str(exc))
+            return False
+        self.style_error.set("")
+        self.render()
+        return True
+
+    def reset_style(self) -> None:
+        self.style = DEFAULT_BBOX_STYLE
+        self.style_vars["color"].set(self.style.color)
+        self.style_vars["line_width"].set(str(self.style.line_width))
+        self.style_vars["font_size"].set(str(self.style.font_size))
+        self.style_vars["label_mode"].set(LABEL_MODE_NAMES[self.style.label_mode])
+        self.style_error.set("")
+        self.render()
+
+    def _update_frame_controls(self) -> None:
+        self.frame_status.set(f"Frame {self.frame_index + 1} / {self.frame_count}")
+        if not self.selected_bboxes:
+            self.include_bbox.set(False)
+            self.bbox_check.configure(state="disabled")
+        else:
+            self.bbox_check.configure(state="normal")
+        self._sync_bbox_tree_selection()
+
+    def _update_bbox_tree(self) -> None:
+        for item in self.bbox_tree.get_children():
+            self.bbox_tree.delete(item)
+        for index, (x, y, width, height, _area) in enumerate(self.boxes):
+            self.bbox_tree.insert("", tk.END, iid=f"bbox-{index}",
+                                  values=(index + 1, x, y, width, height))
+        self.selected_bboxes.intersection_update(range(len(self.boxes)))
+        self._sync_bbox_tree_selection()
+
+    def _sync_bbox_tree_selection(self) -> None:
+        if not hasattr(self, "bbox_tree"):
+            return
+        ids = [f"bbox-{index}" for index in sorted(self.selected_bboxes)
+               if self.bbox_tree.exists(f"bbox-{index}")]
+        current = self.bbox_tree.selection()
+        if set(current) == set(ids):
+            return
+        if current:
+            self.bbox_tree.selection_remove(current)
+        self.bbox_tree.selection_set(*ids)
+
+    def _bbox_tree_selection(self, _event=None) -> None:
+        self.selected_bboxes = {
+            int(str(iid).split("-", 1)[1]) for iid in self.bbox_tree.selection()
+            if str(iid).startswith("bbox-")
+        }
+        self.include_bbox.set(bool(self.selected_bboxes))
+        self._update_frame_controls()
+        self.render()
+
+    def select_all_bboxes(self) -> None:
+        self.selected_bboxes = set(range(len(self.boxes)))
+        self._update_frame_controls()
+        self.render()
+
+    def clear_bbox_selection(self) -> None:
+        self.selected_bboxes.clear()
+        self.include_bbox.set(False)
+        self._update_frame_controls()
+        self.render()
+
+    def current_snapshot(self) -> FrameSnapshot:
+        return FrameSnapshot(
+            video_name=self.video_name, frame_number=self.frame_index + 1,
+            frame=self.frame.copy(), settings=copy.deepcopy(self.settings),
+            boxes=tuple(tuple(box) for box in self.boxes),
+            selected_indices=tuple(sorted(self.selected_bboxes)),
+            source_path=self.source_path, frame_count=self.frame_count, fps=self.fps,
+            view_mode=self.view_mode.get(), include_bbox=bool(self.include_bbox.get()),
+            bbox_style=self.style,
+        )
 
     def current_image(self) -> np.ndarray:
         return compose_frame(
-            self.snapshot.frame,
-            self.snapshot.settings,
-            self.view_mode.get(),
-            boxes=self.snapshot.boxes,
-            selected_indices=self.snapshot.selected_indices if self.include_bbox.get() else None,
-            include_bbox=self.include_bbox.get(),
+            self.frame, self.settings, self.view_mode.get(), boxes=self.boxes,
+            selected_indices=sorted(self.selected_bboxes) if self.include_bbox.get() else None,
+            include_bbox=bool(self.include_bbox.get()), bbox_style=self.style,
         )
 
     def fit(self) -> None:
@@ -116,8 +301,8 @@ class FrameViewer:
         new = max(0.05, min(20.0, old * factor))
         if x is not None and y is not None:
             # Keep the pixel under the pointer fixed while zooming.
-            self.pan[0] = x - (x - self._offset()[0]) * new / old - (self.canvas.winfo_width() - self.snapshot.frame.shape[1] * new) / 2
-            self.pan[1] = y - (y - self._offset()[1]) * new / old - (self.canvas.winfo_height() - self.snapshot.frame.shape[0] * new) / 2
+            self.pan[0] = x - (x - self._offset()[0]) * new / old - (self.canvas.winfo_width() - self.frame.shape[1] * new) / 2
+            self.pan[1] = y - (y - self._offset()[1]) * new / old - (self.canvas.winfo_height() - self.frame.shape[0] * new) / 2
         self.fit_mode = False
         self.zoom = new
         self.render()
@@ -126,17 +311,18 @@ class FrameViewer:
         self.zoom_by(1.15 if event.delta > 0 else 1 / 1.15, event.x, event.y)
 
     def _fit_scale(self) -> float:
-        height, width = self.snapshot.frame.shape[:2]
+        height, width = self.frame.shape[:2]
         return min(max(1, self.canvas.winfo_width()) / width,
                    max(1, self.canvas.winfo_height()) / height)
 
     def _offset(self) -> tuple[float, float]:
-        height, width = self.snapshot.frame.shape[:2]
+        height, width = self.frame.shape[:2]
         scale = self._fit_scale() if self.fit_mode else self.zoom
         return ((self.canvas.winfo_width() - width * scale) / 2 + self.pan[0],
                 (self.canvas.winfo_height() - height * scale) / 2 + self.pan[1])
 
     def press(self, event) -> None:
+        self.canvas.focus_set()
         self.drag_start = (event.x, event.y, self.pan[0], self.pan[1])
 
     def drag(self, event) -> None:
@@ -150,9 +336,14 @@ class FrameViewer:
         self.render()
 
     def render(self) -> None:
-        if not self.root.winfo_exists():
+        if self._closed or not self.root.winfo_exists():
             return
-        image = self.current_image()
+        try:
+            image = self.current_image()
+        except ValueError as exc:
+            self.style_error.set(str(exc))
+            self.canvas.delete("all")
+            return
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         height, width = rgb.shape[:2]
         scale = self._fit_scale() if self.fit_mode else self.zoom
@@ -164,12 +355,47 @@ class FrameViewer:
         self.canvas.create_image(round(ox), round(oy), anchor=tk.NW, image=self.photo)
 
     def export(self) -> None:
-        self.owner.export_frame_snapshot(self.snapshot, self.root,
-                                         self.owner.video_path.parent if self.owner.video_path else None)
+        self.owner.export_frame_snapshot(self.current_snapshot(), self.root,
+                                         self.source_path.parent if self.source_path else None)
+
+    def step(self, amount: int) -> str:
+        self.read_frame(self.frame_index + amount)
+        return "break"
+
+    def read_frame(self, index: int) -> None:
+        if self.capture is None or self._closed:
+            return
+        index = max(0, min(index, self.frame_count - 1))
+        if index == self.frame_index:
+            return
+        try:
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok, frame = self.capture.read()
+            position = self.capture.get(cv2.CAP_PROP_POS_FRAMES)
+            if not ok or abs(position - (index + 1)) > 0.5:
+                raise ValueError(f"無法精確讀取 frame {index + 1}")
+            _mask, boxes, _pixels = self.owner.analyze_frame_with_settings(frame, self.settings)
+        except (ValueError, cv2.error) as exc:
+            self.frame_status.set(f"Frame {self.frame_index + 1} / {self.frame_count} · 讀取失敗：{exc}")
+            return
+        # State is committed only after decode and analysis both succeed.
+        self.frame_index, self.frame = index, frame
+        self.boxes = list(boxes)
+        self.selected_bboxes.clear()
+        self._update_bbox_tree()
+        self._update_frame_controls()
+        self.root.title(f"{self.video_name} · Frame {self.frame_index + 1}")
+        self.render()
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         if self in self.owner.frame_viewers:
             self.owner.frame_viewers.remove(self)
+        if self.capture is not None:
+            self.capture.release()
+            self.capture = None
         if self.root.winfo_exists():
             self.root.destroy()
 
@@ -262,6 +488,7 @@ class HSVVideoTester:
         self._updating_tree_selection = False
         self._ignore_bbox_event = False
         self.frame_viewers: list[FrameViewer] = []
+        self.last_bbox_style = DEFAULT_BBOX_STYLE
         self.last_results: list[FrameResult] = []
         self.analysis_config: dict[str, object] | None = None
         self.h_min, self.h_max = tk.IntVar(value=160), tk.IntVar(value=179)
@@ -557,6 +784,15 @@ class HSVVideoTester:
                     min_area=self.min_area.get(),
                     roi=tuple(self.roi) if self.roi else None)
 
+    @staticmethod
+    def analyze_frame_with_settings(frame: np.ndarray, settings: dict[str, object]):
+        """Analyze a frame with a frozen detection snapshot.
+
+        Independent viewers use this instead of reading the owner's Tk
+        variables, so changing another window cannot change their result.
+        """
+        return segment_frame(frame, settings)
+
     def snapshot_current_frame(self) -> FrameSnapshot | None:
         if self.frame is None or self.video_path is None:
             return None
@@ -568,6 +804,12 @@ class HSVVideoTester:
             settings=self._frame_settings(),
             boxes=tuple(tuple(box) for box in boxes),
             selected_indices=tuple(sorted(self.selected_bboxes)),
+            source_path=self.video_path,
+            frame_count=self.frame_count,
+            fps=self.fps,
+            view_mode=self.view_mode.get(),
+            include_bbox=bool(self.selected_bboxes),
+            bbox_style=getattr(self, "last_bbox_style", DEFAULT_BBOX_STYLE),
         )
 
     def open_frame_viewer(self) -> None:
@@ -580,27 +822,119 @@ class HSVVideoTester:
 
     def export_frame_snapshot(self, snapshot: FrameSnapshot, parent: tk.Misc,
                               initialdir: Path | None = None) -> None:
-        """Show options, then save one original-resolution PNG."""
+        """Preview and save one original-resolution PNG."""
         dialog = tk.Toplevel(parent)
         dialog.title(f"匯出 Frame {snapshot.frame_number} PNG")
+        dialog.geometry("900x760")
+        dialog.minsize(680, 580)
         dialog.transient(parent)
         dialog.grab_set()
-        mode = tk.StringVar(value="Original")
-        include = tk.BooleanVar(value=False)
+        mode = tk.StringVar(value=snapshot.view_mode if snapshot.view_mode in IMAGE_MODES else "Original")
+        include = tk.BooleanVar(value=bool(snapshot.include_bbox and snapshot.selected_indices))
+        initial_style = validate_bbox_style(snapshot.bbox_style)
+        style = initial_style
+        style_vars = {
+            "color": tk.StringVar(value=style.color),
+            "line_width": tk.StringVar(value=str(style.line_width)),
+            "font_size": tk.StringVar(value=str(style.font_size)),
+            "label_mode": tk.StringVar(value=LABEL_MODE_NAMES[style.label_mode]),
+        }
+        preview_error = tk.StringVar()
         ttk.Label(dialog, text=f"{snapshot.video_name} · Frame {snapshot.frame_number}",
                   padding=(12, 10)).pack(anchor=tk.W)
         row = ttk.Frame(dialog, padding=(12, 3))
         row.pack(fill=tk.X)
         ttk.Label(row, text="圖片模式").pack(side=tk.LEFT)
-        ttk.Combobox(row, textvariable=mode, values=IMAGE_MODES, state="readonly",
-                     width=12).pack(side=tk.LEFT, padx=(8, 0))
+        mode_box = ttk.Combobox(row, textvariable=mode, values=IMAGE_MODES, state="readonly",
+                                width=12)
+        mode_box.pack(side=tk.LEFT, padx=(8, 0))
         check = ttk.Checkbutton(dialog, text="包含選取 bbox", variable=include)
         check.pack(anchor=tk.W, padx=12, pady=6)
         if not snapshot.selected_indices:
             check.configure(state="disabled")
 
+        style_group = ttk.LabelFrame(dialog, text="bbox 出圖樣式（原始影像像素）", padding=8)
+        style_group.pack(fill=tk.X, padx=12, pady=(0, 6))
+        for label, key in (("框線／文字色", "color"), ("線寬 px", "line_width"),
+                           ("字體 px", "font_size")):
+            line = ttk.Frame(style_group)
+            line.pack(side=tk.LEFT, padx=(0, 12))
+            ttk.Label(line, text=label).pack(side=tk.LEFT, padx=(0, 4))
+            entry = ttk.Entry(line, textvariable=style_vars[key], width=10)
+            entry.pack(side=tk.LEFT)
+            entry.bind("<Return>", lambda _event: update_preview())
+            entry.bind("<FocusOut>", lambda _event: update_preview())
+        ttk.Label(style_group, text="標籤內容").pack(side=tk.LEFT, padx=(0, 4))
+        label_box = ttk.Combobox(style_group, textvariable=style_vars["label_mode"],
+                                 values=tuple(LABEL_MODE_NAMES.values()), state="readonly", width=18)
+        label_box.pack(side=tk.LEFT)
+        ttk.Button(style_group, text="恢復預設", command=lambda: reset_style()).pack(side=tk.LEFT, padx=10)
+        ttk.Label(style_group, textvariable=preview_error, foreground="#b3261e",
+                  wraplength=800).pack(side=tk.LEFT, padx=4)
+
+        preview_group = ttk.LabelFrame(dialog, text="預覽", padding=6)
+        preview_group.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
+        preview_canvas = tk.Canvas(preview_group, background="#142029", highlightthickness=0)
+        preview_canvas.pack(fill=tk.BOTH, expand=True)
+        preview_photo = {"image": None}
+
+        def read_style() -> BboxStyle:
+            label_mode = next((key for key, name in LABEL_MODE_NAMES.items()
+                               if name == style_vars["label_mode"].get()), style_vars["label_mode"].get())
+            return validate_bbox_style({"color": style_vars["color"].get(),
+                                        "line_width": style_vars["line_width"].get(),
+                                        "font_size": style_vars["font_size"].get(),
+                                        "label_mode": label_mode})
+
+        def update_preview(*_args) -> None:
+            nonlocal style
+            try:
+                style = read_style()
+                image = compose_frame(snapshot.frame, snapshot.settings, mode.get(),
+                                      boxes=snapshot.boxes,
+                                      selected_indices=snapshot.selected_indices if include.get() else None,
+                                      include_bbox=bool(include.get() and snapshot.selected_indices),
+                                      bbox_style=style)
+            except (ValueError, cv2.error) as exc:
+                preview_error.set(str(exc))
+                preview_canvas.delete("all")
+                return
+            preview_error.set("")
+            preview_canvas.delete("all")
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            preview_canvas.update_idletasks()
+            cw, ch = max(1, preview_canvas.winfo_width()), max(1, preview_canvas.winfo_height())
+            height, width = rgb.shape[:2]
+            scale = min(cw / width, ch / height)
+            size = (max(1, round(width * scale)), max(1, round(height * scale)))
+            display = Image.fromarray(rgb).resize(size, Image.Resampling.LANCZOS)
+            preview_photo["image"] = ImageTk.PhotoImage(display)
+            preview_canvas.create_image((cw - size[0]) // 2, (ch - size[1]) // 2,
+                                         anchor=tk.NW, image=preview_photo["image"])
+
+        def reset_style() -> None:
+            style_vars["color"].set(DEFAULT_BBOX_STYLE.color)
+            style_vars["line_width"].set(str(DEFAULT_BBOX_STYLE.line_width))
+            style_vars["font_size"].set(str(DEFAULT_BBOX_STYLE.font_size))
+            style_vars["label_mode"].set(LABEL_MODE_NAMES[DEFAULT_BBOX_STYLE.label_mode])
+            update_preview()
+
+        def close_dialog() -> None:
+            try:
+                dialog.grab_release()
+            finally:
+                dialog.destroy()
+
         def save():
-            annotated = bool(include.get() and snapshot.selected_indices)
+            try:
+                confirmed_style = read_style()
+            except ValueError as exc:
+                preview_error.set(str(exc))
+                return
+            annotated = bool(include.get())
+            if annotated and not snapshot.selected_indices:
+                preview_error.set("目前幀沒有選取 bbox，不能匯出帶框圖片。")
+                return
             initial = frame_filename(snapshot.video_name, snapshot.frame_number,
                                      mode.get(), annotated)
             filename = filedialog.asksaveasfilename(
@@ -616,20 +950,25 @@ class HSVVideoTester:
                 image = compose_frame(snapshot.frame, snapshot.settings, mode.get(),
                                       boxes=snapshot.boxes,
                                       selected_indices=snapshot.selected_indices if annotated else None,
-                                      include_bbox=annotated)
+                                      include_bbox=annotated, bbox_style=confirmed_style)
                 write_png(path, image)
             except (OSError, ValueError, cv2.error) as exc:
                 messagebox.showerror("PNG 匯出失敗", str(exc), parent=dialog)
                 return
-            dialog.grab_release()
-            dialog.destroy()
+            self.last_bbox_style = confirmed_style
+            close_dialog()
             messagebox.showinfo("PNG 匯出完成", f"已儲存：\n{path}", parent=parent)
 
+        mode_box.bind("<<ComboboxSelected>>", update_preview)
+        label_box.bind("<<ComboboxSelected>>", update_preview)
+        check.configure(command=update_preview)
+        preview_canvas.bind("<Configure>", update_preview)
         buttons = ttk.Frame(dialog, padding=12)
         buttons.pack(fill=tk.X)
-        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="取消", command=close_dialog).pack(side=tk.RIGHT)
         ttk.Button(buttons, text="儲存", command=save).pack(side=tk.RIGHT, padx=5)
-        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        update_preview()
 
     def _close_frame_viewers(self) -> None:
         for viewer in list(self.frame_viewers):

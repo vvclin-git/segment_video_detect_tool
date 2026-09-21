@@ -15,8 +15,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from frame_render import (IMAGE_MODES, compose_frame, frame_filename,
-                          segment_frame, write_png)
+from frame_render import (IMAGE_MODES, LEGACY_BBOX_STYLE, compose_frame,
+                           frame_filename, segment_frame, write_png)
 from result_index import write_index
 
 VERSION = "batch-1.0"
@@ -416,7 +416,8 @@ def export_batch(items, parent, progress=None):
                         annotated = compose_frame(frame, run["settings"], "Original",
                                                   boxes=boxes,
                                                   selected_indices=range(len(boxes)),
-                                                  include_bbox=True, include_roi=True)
+                                                  include_bbox=True, include_roi=True,
+                                                  bbox_style=LEGACY_BBOX_STYLE)
                         for suffix, image in (("raw", frame), ("annotated", annotated), ("mask", mask)):
                             path = output / f"{event}_frame_{number:06d}_{suffix}.png"
                             write_png(path, image)
