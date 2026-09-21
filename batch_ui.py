@@ -56,6 +56,7 @@ class VideoEditor(HSVVideoTester):
     """Reuse proven video navigation and histogram, with isolated item/run settings."""
     def __init__(self, owner, item, review=False, number=None):
         self.owner, self.item, self.review = owner, item, review
+        self.batch_features = True
         self.run = copy.deepcopy(item.get("latest_run")) if review else None
         self.initial = copy.deepcopy(self.run["settings"] if self.run else item["settings"])
         self.rows = core.load_rows(self.run) if self.run else []
@@ -117,6 +118,8 @@ class VideoEditor(HSVVideoTester):
         ttk.Combobox(bar, textvariable=self.view_mode, values=("Original", "Mask", "Overlay"),
                      state="readonly", width=10).pack(side="left", padx=8)
         self.view_mode.trace_add("write", lambda *_: self.render())
+        ttk.Button(bar, text="獨立檢視當幀", command=self.open_frame_viewer).pack(side="left", padx=3)
+        ttk.Button(bar, text="匯出當幀 PNG…", command=self.export_current_png).pack(side="left", padx=3)
         if not self.review:
             ttk.Button(bar, text="清除 ROI", command=self.clear_roi).pack(side="left")
             ttk.Button(bar, text="儲存設定", command=self.save).pack(side="right")
@@ -227,11 +230,17 @@ class VideoEditor(HSVVideoTester):
         self.hist_canvas.bind("<Configure>", lambda _: self.draw_histogram())
         ttk.Label(right, textvariable=self.roi_text).pack(anchor="w")
         ttk.Label(right, textvariable=self.stats_text, wraplength=340).pack(anchor="w")
-        self.tree = ttk.Treeview(right, columns=("id", "x", "y", "w", "h", "area", "cx", "cy"), show="headings", height=3)
+        self.tree = ttk.Treeview(right, columns=("id", "x", "y", "w", "h", "area", "cx", "cy"),
+                                 show="headings", height=3, selectmode="extended")
         for key in self.tree["columns"]:
             self.tree.heading(key, text=key)
             self.tree.column(key, width=40)
         self.tree.pack(fill="both", expand=True, pady=4)
+        bbox_tools = ttk.Frame(right)
+        bbox_tools.pack(fill="x")
+        ttk.Button(bbox_tools, text="全選 bbox", command=self.select_all_bboxes).pack(side="left")
+        ttk.Button(bbox_tools, text="清除選取", command=self.clear_bbox_selection).pack(side="left", padx=4)
+        self.tree.bind("<<TreeviewSelect>>", self._bbox_tree_selection)
         def wheel_bind(widget):
             widget.bind("<MouseWheel>", lambda e: controls_canvas.yview_scroll(-int(e.delta / 120), "units"))
             for child in widget.winfo_children():
@@ -264,6 +273,8 @@ class VideoEditor(HSVVideoTester):
         def typed(*_):
             try:
                 scale.configure(value=max(low, min(high, variable.get())))
+                if label.startswith(("H ", "S ", "V ")) or label == "Min blob area":
+                    self.clear_bbox_selection()
                 self.render()
             except tk.TclError:
                 pass
@@ -350,6 +361,8 @@ class VideoEditor(HSVVideoTester):
         if self.capture is None:
             return
         index = max(0, min(index, self.frame_count - 1))
+        if index != self.frame_index:
+            self.clear_bbox_selection()
         try:
             self.frame = core.read_exact_frame(self.video_path, index + 1, self.capture)
         except ValueError as exc:
@@ -393,6 +406,16 @@ class VideoEditor(HSVVideoTester):
             super().render()
         except (ValueError, tk.TclError):
             pass  # Intermediate text in a numeric entry is not an applied setting.
+
+    def export_current_png(self):
+        self.playing = False
+        if self.after_id:
+            self.root.after_cancel(self.after_id)
+            self.after_id = None
+        snapshot = self.snapshot_current_frame()
+        if snapshot is not None:
+            self.export_frame_snapshot(snapshot, self.root,
+                                       self.video_path.parent if self.video_path else None)
 
     def roi_release(self, event):
         super().roi_release(event)
@@ -1014,8 +1037,16 @@ class BatchApp:
                     self.busy = False
                     _, path, summaries = event
                     good = sum(s["export_status"] in ("completed", "manual_only") for s in summaries)
-                    self.message.set(f"匯出完成 {good}/{len(summaries)}；詳見 batch_summary.csv：{path}")
-                    messagebox.showinfo("批次匯出", f"完整匯出：{good}/{len(summaries)}\n\n{path}\n\n缺項／失敗請查看 batch_summary.csv 與 manifest。", parent=self.root)
+                    index_path = Path(path) / "index.html"
+                    index_error = Path(path) / "index_generation_error.txt"
+                    if index_path.is_file():
+                        index_note = f"\n離線結果索引：{index_path}"
+                    elif index_error.is_file():
+                        index_note = f"\n結果索引產生失敗（既有匯出已保留）：{index_error}\n{index_error.read_text(encoding='utf-8', errors='replace')}"
+                    else:
+                        index_note = "\n結果索引未產生；請查看匯出資料夾。"
+                    self.message.set(f"匯出完成 {good}/{len(summaries)}；詳見 batch_summary.csv：{path}" + index_note)
+                    messagebox.showinfo("批次匯出", f"完整匯出：{good}/{len(summaries)}\n\n{path}{index_note}\n\n缺項／失敗請查看 batch_summary.csv 與 manifest。", parent=self.root)
                 elif kind == "export_error":
                     self.busy = False
                     error(self.root, event[1])

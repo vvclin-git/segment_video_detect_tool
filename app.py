@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+from frame_render import IMAGE_MODES, compose_frame, frame_filename, write_png
+
 
 @dataclass
 class FrameResult:
@@ -28,6 +30,148 @@ class FrameResult:
     rolling_rate: float = 0.0
     stable_detected: int = 0
     consecutive_miss: int = 0
+
+
+@dataclass
+class FrameSnapshot:
+    """Immutable-in-practice data captured when a fixed frame window opens."""
+
+    video_name: str
+    frame_number: int
+    frame: np.ndarray
+    settings: dict[str, object]
+    boxes: tuple[tuple[int, int, int, int, int], ...]
+    selected_indices: tuple[int, ...]
+
+
+class FrameViewer:
+    """Independent, zoomable view of one captured frame."""
+
+    def __init__(self, owner: "HSVVideoTester", snapshot: FrameSnapshot):
+        self.owner = owner
+        self.snapshot = snapshot
+        self.root = tk.Toplevel(owner.root)
+        self.root.title(f"{snapshot.video_name} · Frame {snapshot.frame_number}")
+        self.root.geometry("980x720")
+        self.root.minsize(520, 360)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.view_mode = tk.StringVar(value="Original")
+        self.include_bbox = tk.BooleanVar(value=False)
+        self.zoom = 1.0
+        self.fit_mode = True
+        self.pan = [0.0, 0.0]
+        self.drag_start = None
+        self.photo = None
+        toolbar = ttk.Frame(self.root, padding=7)
+        toolbar.pack(fill=tk.X)
+        ttk.Label(toolbar, text="模式").pack(side=tk.LEFT)
+        ttk.Combobox(toolbar, textvariable=self.view_mode, values=IMAGE_MODES,
+                     state="readonly", width=10).pack(side=tk.LEFT, padx=(4, 10))
+        self.view_mode.trace_add("write", lambda *_: self.render())
+        check = ttk.Checkbutton(toolbar, text="包含選取 bbox", variable=self.include_bbox,
+                                command=self.render)
+        check.pack(side=tk.LEFT)
+        if not snapshot.selected_indices:
+            check.configure(state="disabled")
+        ttk.Button(toolbar, text="符合視窗", command=self.fit).pack(side=tk.LEFT, padx=(14, 3))
+        ttk.Button(toolbar, text="100%", command=self.original_size).pack(side=tk.LEFT, padx=3)
+        ttk.Button(toolbar, text="匯出 PNG…", command=self.export).pack(side=tk.RIGHT, padx=3)
+        self.canvas = tk.Canvas(self.root, bg="#142029", highlightthickness=0,
+                                cursor="fleur")
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Configure>", lambda _event: self.render())
+        self.canvas.bind("<ButtonPress-1>", self.press)
+        self.canvas.bind("<B1-Motion>", self.drag)
+        self.canvas.bind("<ButtonRelease-1>", lambda _event: setattr(self, "drag_start", None))
+        self.canvas.bind("<MouseWheel>", self.wheel)
+        self.canvas.bind("<Button-4>", lambda event: self.zoom_by(1.15, event.x, event.y))
+        self.canvas.bind("<Button-5>", lambda event: self.zoom_by(1 / 1.15, event.x, event.y))
+        self.root.bind("<Escape>", lambda _event: self.close())
+        owner.frame_viewers.append(self)
+        self.root.after_idle(self.fit)
+
+    def current_image(self) -> np.ndarray:
+        return compose_frame(
+            self.snapshot.frame,
+            self.snapshot.settings,
+            self.view_mode.get(),
+            boxes=self.snapshot.boxes,
+            selected_indices=self.snapshot.selected_indices if self.include_bbox.get() else None,
+            include_bbox=self.include_bbox.get(),
+        )
+
+    def fit(self) -> None:
+        self.fit_mode = True
+        self.pan = [0.0, 0.0]
+        self.render()
+
+    def original_size(self) -> None:
+        self.fit_mode = False
+        self.zoom = 1.0
+        self.pan = [0.0, 0.0]
+        self.render()
+
+    def zoom_by(self, factor: float, x: int | None = None, y: int | None = None) -> None:
+        old = self.zoom if not self.fit_mode else self._fit_scale()
+        new = max(0.05, min(20.0, old * factor))
+        if x is not None and y is not None:
+            # Keep the pixel under the pointer fixed while zooming.
+            self.pan[0] = x - (x - self._offset()[0]) * new / old - (self.canvas.winfo_width() - self.snapshot.frame.shape[1] * new) / 2
+            self.pan[1] = y - (y - self._offset()[1]) * new / old - (self.canvas.winfo_height() - self.snapshot.frame.shape[0] * new) / 2
+        self.fit_mode = False
+        self.zoom = new
+        self.render()
+
+    def wheel(self, event) -> None:
+        self.zoom_by(1.15 if event.delta > 0 else 1 / 1.15, event.x, event.y)
+
+    def _fit_scale(self) -> float:
+        height, width = self.snapshot.frame.shape[:2]
+        return min(max(1, self.canvas.winfo_width()) / width,
+                   max(1, self.canvas.winfo_height()) / height)
+
+    def _offset(self) -> tuple[float, float]:
+        height, width = self.snapshot.frame.shape[:2]
+        scale = self._fit_scale() if self.fit_mode else self.zoom
+        return ((self.canvas.winfo_width() - width * scale) / 2 + self.pan[0],
+                (self.canvas.winfo_height() - height * scale) / 2 + self.pan[1])
+
+    def press(self, event) -> None:
+        self.drag_start = (event.x, event.y, self.pan[0], self.pan[1])
+
+    def drag(self, event) -> None:
+        if self.drag_start is None:
+            return
+        x, y, start_x, start_y = self.drag_start
+        if self.fit_mode:
+            self.zoom = self._fit_scale()
+        self.fit_mode = False
+        self.pan = [start_x + event.x - x, start_y + event.y - y]
+        self.render()
+
+    def render(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        image = self.current_image()
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        height, width = rgb.shape[:2]
+        scale = self._fit_scale() if self.fit_mode else self.zoom
+        size = (max(1, round(width * scale)), max(1, round(height * scale)))
+        display = Image.fromarray(rgb).resize(size, Image.Resampling.LANCZOS)
+        self.photo = ImageTk.PhotoImage(display)
+        self.canvas.delete("all")
+        ox, oy = self._offset()
+        self.canvas.create_image(round(ox), round(oy), anchor=tk.NW, image=self.photo)
+
+    def export(self) -> None:
+        self.owner.export_frame_snapshot(self.snapshot, self.root,
+                                         self.owner.video_path.parent if self.owner.video_path else None)
+
+    def close(self) -> None:
+        if self in self.owner.frame_viewers:
+            self.owner.frame_viewers.remove(self)
+        if self.root.winfo_exists():
+            self.root.destroy()
 
 
 def calculate_stable_states(detections: list[int], window: int, on_count: int,
@@ -113,6 +257,11 @@ class HSVVideoTester:
         self.display_scale = 1.0
         self.display_offset = (0, 0)
         self.photo: ImageTk.PhotoImage | None = None
+        self.batch_features = bool(getattr(self, "batch_features", False))
+        self.selected_bboxes: set[int] = set()
+        self._updating_tree_selection = False
+        self._ignore_bbox_event = False
+        self.frame_viewers: list[FrameViewer] = []
         self.last_results: list[FrameResult] = []
         self.analysis_config: dict[str, object] | None = None
         self.h_min, self.h_max = tk.IntVar(value=160), tk.IntVar(value=179)
@@ -204,11 +353,18 @@ class HSVVideoTester:
         blobs = ttk.LabelFrame(right, text="Blob bounding boxes", padding=8)
         blobs.pack(fill=tk.BOTH, expand=True, padx=(8, 0), pady=(8, 0))
         columns = ("id", "x", "y", "w", "h", "area", "cx", "cy")
-        self.tree = ttk.Treeview(blobs, columns=columns, show="headings", height=7)
+        self.tree = ttk.Treeview(blobs, columns=columns, show="headings", height=7,
+                                 selectmode="extended" if self.batch_features else "browse")
         for name, width in zip(columns, (30, 42, 42, 38, 38, 52, 48, 48)):
             self.tree.heading(name, text=name.upper())
             self.tree.column(name, width=width, anchor=tk.CENTER)
         self.tree.pack(fill=tk.BOTH, expand=True)
+        if self.batch_features:
+            bbox_tools = ttk.Frame(blobs)
+            bbox_tools.pack(fill=tk.X, pady=(4, 0))
+            ttk.Button(bbox_tools, text="全選 bbox", command=self.select_all_bboxes).pack(side=tk.LEFT)
+            ttk.Button(bbox_tools, text="清除選取", command=self.clear_bbox_selection).pack(side=tk.LEFT, padx=4)
+            self.tree.bind("<<TreeviewSelect>>", self._bbox_tree_selection)
         ttk.Label(right, textvariable=self.analysis_text, wraplength=350).pack(fill=tk.X, padx=(8, 0), pady=8)
 
     def _add_slider(self, parent: ttk.Widget, label: str, variable: tk.IntVar,
@@ -222,6 +378,8 @@ class HSVVideoTester:
             number = max(low, min(high, round(float(value))))
             variable.set(number)
             entry_value.set(str(number))
+            if self.batch_features and (label.startswith(("H ", "S ", "V ")) or label == "Min blob area"):
+                self.clear_bbox_selection()
             self.last_results = []
             self.analysis_config = None
             self.render()
@@ -240,6 +398,8 @@ class HSVVideoTester:
             variable.set(number)
             entry_value.set(str(number))
             scale.set(number)
+            if self.batch_features and (label.startswith(("H ", "S ", "V ")) or label == "Min blob area"):
+                self.clear_bbox_selection()
             self.last_results = []
             self.analysis_config = None
             self.render()
@@ -283,6 +443,8 @@ class HSVVideoTester:
         if self.capture is None:
             return
         index = max(0, min(index, self.frame_count - 1))
+        if self.batch_features and index != self.frame_index:
+            self.clear_bbox_selection()
         self.capture.set(cv2.CAP_PROP_POS_FRAMES, index)
         ok, frame = self.capture.read()
         if ok:
@@ -336,6 +498,143 @@ class HSVVideoTester:
             self.playing = False
             self.read_frame(index)
 
+    def clear_bbox_selection(self) -> None:
+        """Clear selected boxes without changing the current frame or view."""
+        self.selected_bboxes.clear()
+        tree = getattr(self, "tree", None)
+        if tree is not None and tree.winfo_exists():
+            tree.selection_remove(tree.selection())
+        if getattr(self, "frame", None) is not None and getattr(self, "batch_features", False):
+            self.render()
+
+    def select_all_bboxes(self) -> None:
+        if not self.batch_features:
+            return
+        boxes = self.analyze_frame(self.frame)[1] if self.frame is not None else []
+        self.selected_bboxes = set(range(len(boxes)))
+        self._sync_tree_selection()
+        self.render()
+
+    def _bbox_tree_selection(self, _event=None) -> None:
+        if not self.batch_features or self._updating_tree_selection or self._ignore_bbox_event:
+            return
+        selected = set()
+        for iid in self.tree.selection():
+            if str(iid).startswith("bbox-"):
+                try:
+                    selected.add(int(str(iid).split("-", 1)[1]))
+                except ValueError:
+                    continue
+        self.selected_bboxes = selected
+        self._ignore_bbox_event = True
+        try:
+            self.render()
+        finally:
+            self._ignore_bbox_event = False
+
+    def _sync_tree_selection(self) -> None:
+        if not self.batch_features or not hasattr(self, "tree"):
+            return
+        available = [f"bbox-{index}" for index in sorted(self.selected_bboxes)
+                     if self.tree.exists(f"bbox-{index}")]
+        current = set(self.tree.selection())
+        if current == set(available):
+            return
+        self._updating_tree_selection = True
+        self.tree.selection_set(*available)
+        # Tk delivers <<TreeviewSelect>> after the Tcl command returns.  Keep
+        # the guard alive until idle so restoring selection during a redraw is
+        # not mistaken for a user click (which otherwise redraws forever).
+        self.root.after_idle(self._release_tree_selection_guard)
+
+    def _release_tree_selection_guard(self) -> None:
+        self._updating_tree_selection = False
+
+    def _frame_settings(self) -> dict[str, object]:
+        """Return only the saved detection inputs needed to recreate a frame."""
+        return dict(lower=[self.h_min.get(), self.s_min.get(), self.v_min.get()],
+                    upper=[self.h_max.get(), self.s_max.get(), self.v_max.get()],
+                    min_area=self.min_area.get(),
+                    roi=tuple(self.roi) if self.roi else None)
+
+    def snapshot_current_frame(self) -> FrameSnapshot | None:
+        if self.frame is None or self.video_path is None:
+            return None
+        _mask, boxes, _pixels = self.analyze_frame(self.frame)
+        return FrameSnapshot(
+            video_name=self.video_path.name,
+            frame_number=self.frame_index + 1,
+            frame=self.frame.copy(),
+            settings=self._frame_settings(),
+            boxes=tuple(tuple(box) for box in boxes),
+            selected_indices=tuple(sorted(self.selected_bboxes)),
+        )
+
+    def open_frame_viewer(self) -> None:
+        """Open a fixed snapshot; later playback or edits cannot mutate it."""
+        if not self.batch_features:
+            return
+        snapshot = self.snapshot_current_frame()
+        if snapshot is not None:
+            FrameViewer(self, snapshot)
+
+    def export_frame_snapshot(self, snapshot: FrameSnapshot, parent: tk.Misc,
+                              initialdir: Path | None = None) -> None:
+        """Show options, then save one original-resolution PNG."""
+        dialog = tk.Toplevel(parent)
+        dialog.title(f"匯出 Frame {snapshot.frame_number} PNG")
+        dialog.transient(parent)
+        dialog.grab_set()
+        mode = tk.StringVar(value="Original")
+        include = tk.BooleanVar(value=False)
+        ttk.Label(dialog, text=f"{snapshot.video_name} · Frame {snapshot.frame_number}",
+                  padding=(12, 10)).pack(anchor=tk.W)
+        row = ttk.Frame(dialog, padding=(12, 3))
+        row.pack(fill=tk.X)
+        ttk.Label(row, text="圖片模式").pack(side=tk.LEFT)
+        ttk.Combobox(row, textvariable=mode, values=IMAGE_MODES, state="readonly",
+                     width=12).pack(side=tk.LEFT, padx=(8, 0))
+        check = ttk.Checkbutton(dialog, text="包含選取 bbox", variable=include)
+        check.pack(anchor=tk.W, padx=12, pady=6)
+        if not snapshot.selected_indices:
+            check.configure(state="disabled")
+
+        def save():
+            annotated = bool(include.get() and snapshot.selected_indices)
+            initial = frame_filename(snapshot.video_name, snapshot.frame_number,
+                                     mode.get(), annotated)
+            filename = filedialog.asksaveasfilename(
+                parent=dialog, title="儲存 PNG", initialdir=str(initialdir) if initialdir else None,
+                initialfile=initial, defaultextension=".png",
+                filetypes=[("PNG", "*.png")])
+            if not filename:
+                return
+            path = Path(filename)
+            if path.exists() and not messagebox.askyesno("覆寫檔案", f"檔案已存在，是否覆寫？\n{path}", parent=dialog):
+                return
+            try:
+                image = compose_frame(snapshot.frame, snapshot.settings, mode.get(),
+                                      boxes=snapshot.boxes,
+                                      selected_indices=snapshot.selected_indices if annotated else None,
+                                      include_bbox=annotated)
+                write_png(path, image)
+            except (OSError, ValueError, cv2.error) as exc:
+                messagebox.showerror("PNG 匯出失敗", str(exc), parent=dialog)
+                return
+            dialog.grab_release()
+            dialog.destroy()
+            messagebox.showinfo("PNG 匯出完成", f"已儲存：\n{path}", parent=parent)
+
+        buttons = ttk.Frame(dialog, padding=12)
+        buttons.pack(fill=tk.X)
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="儲存", command=save).pack(side=tk.RIGHT, padx=5)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+    def _close_frame_viewers(self) -> None:
+        for viewer in list(self.frame_viewers):
+            viewer.close()
+
     def analyze_frame(self, frame: np.ndarray) -> tuple[np.ndarray, list[tuple[int, int, int, int, int]], int]:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         lower = np.array([self.h_min.get(), self.s_min.get(), self.v_min.get()], dtype=np.uint8)
@@ -383,21 +682,25 @@ class HSVVideoTester:
         if self.frame is None or self.canvas.winfo_width() < 2:
             return
         mask, boxes, pixels = self.analyze_frame(self.frame)
-        if self.view_mode.get() == "Mask":
-            output = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        if self.batch_features:
+            output = compose_frame(self.frame, self._frame_settings(), self.view_mode.get(),
+                                   boxes=boxes, highlight_indices=self.selected_bboxes)
         else:
-            output = self.frame.copy()
-            if self.view_mode.get() == "Overlay":
-                selected, tint = mask > 0, np.zeros_like(output)
-                tint[:, :, 2] = 255
-                output[selected] = cv2.addWeighted(output, 0.35, tint, 0.65, 0)[selected]
-        for index, (x, y, width, height, _area) in enumerate(boxes, start=1):
-            cv2.rectangle(output, (x, y), (x + width, y + height), (0, 255, 0), 2)
-            cv2.putText(output, f"{index}: {width}x{height}", (x, max(16, y - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            if self.view_mode.get() == "Mask":
+                output = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            else:
+                output = self.frame.copy()
+                if self.view_mode.get() == "Overlay":
+                    selected, tint = mask > 0, np.zeros_like(output)
+                    tint[:, :, 2] = 255
+                    output[selected] = cv2.addWeighted(output, 0.35, tint, 0.65, 0)[selected]
+            for index, (x, y, width, height, _area) in enumerate(boxes, start=1):
+                cv2.rectangle(output, (x, y), (x + width - 1, y + height - 1), (0, 255, 0), 2)
+                cv2.putText(output, f"{index}: {width}x{height}", (x, max(16, y - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
         if self.roi:
             x1, y1, x2, y2 = self.roi
-            cv2.rectangle(output, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.rectangle(output, (x1, y1), (x2 - 1, y2 - 1), (0, 255, 255), 2)
         self._show_on_canvas(output)
         self._update_stats(boxes, pixels)
         self.draw_histogram()
@@ -445,8 +748,11 @@ class HSVVideoTester:
         for item in self.tree.get_children():
             self.tree.delete(item)
         for index, (x, y, width, height, area) in enumerate(boxes, 1):
-            self.tree.insert("", tk.END, values=(index, x, y, width, height, area,
+            self.tree.insert("", tk.END, iid=f"bbox-{index - 1}", values=(index, x, y, width, height, area,
                 f"{x + width / 2:.1f}", f"{y + height / 2:.1f}"))
+        if self.batch_features:
+            self.selected_bboxes.intersection_update(range(len(boxes)))
+            self._sync_tree_selection()
         largest = boxes[0][4] if boxes else 0
         self.stats_text.set(f"Pixels: {pixels} | Blobs: {len(boxes)} | Largest: {largest} px | Raw: {int(bool(boxes))}")
         self.status.set(f"Frame {self.frame_index + 1}/{self.frame_count} | "
@@ -739,6 +1045,8 @@ class HSVVideoTester:
         y1, y2 = sorted((self.drag_start[1], current[1]))
         if x2 > x1 and y2 > y1:
             self.roi = (x1, y1, x2, y2)
+            if self.batch_features:
+                self.clear_bbox_selection()
             self.last_results = []
             self.analysis_config = None
             self.render()
@@ -749,6 +1057,8 @@ class HSVVideoTester:
 
     def clear_roi(self) -> None:
         self.roi, self.last_results, self.analysis_config = None, [], None
+        if self.batch_features:
+            self.clear_bbox_selection()
         self.render()
 
     def close(self) -> None:
@@ -757,6 +1067,7 @@ class HSVVideoTester:
             self.root.after_cancel(self.after_id)
         if self.capture:
             self.capture.release()
+        self._close_frame_viewers()
         self.root.destroy()
 
 

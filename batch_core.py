@@ -15,6 +15,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from frame_render import (IMAGE_MODES, compose_frame, frame_filename,
+                          segment_frame, write_png)
+from result_index import write_index
+
 VERSION = "batch-1.0"
 DEFAULTS = dict(lower=[160, 140, 80], upper=[179, 255, 255], min_area=20,
                 roi=None, start_percent=0.0, end_percent=100.0, window_n=5,
@@ -185,21 +189,6 @@ def analysis_bounds(settings, total):
     if not 0 <= start < end <= total:
         raise ValueError("分析範圍沒有有效幀")
     return start, end
-
-
-def segment_frame(frame, settings):
-    mask = cv2.inRange(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV),
-                       np.array(settings["lower"], dtype=np.uint8),
-                       np.array(settings["upper"], dtype=np.uint8))
-    if settings["roi"] is not None:
-        x1, y1, x2, y2 = settings["roi"]
-        roi_mask = np.zeros_like(mask)
-        roi_mask[y1:y2, x1:x2] = mask[y1:y2, x1:x2]
-        mask = roi_mask
-    count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    boxes = [tuple(map(int, stats[i])) for i in range(1, count) if stats[i, 4] >= settings["min_area"]]
-    boxes.sort(key=lambda box: box[4], reverse=True)
-    return mask, boxes, cv2.countNonZero(mask)
 
 
 class StableTracker:
@@ -375,17 +364,11 @@ def read_exact_frame(path, number, capture=None):
             cap.release()
 
 
-def write_png(path, frame):
-    ok, buffer = cv2.imencode(".png", frame)
-    if not ok:
-        raise ValueError("PNG 編碼失敗")
-    buffer.tofile(str(path))
-
-
 def export_batch(items, parent, progress=None):
     directory = Path(parent) / ("batch_export_" + datetime.now().strftime("%Y%m%d_%H%M%S_") + uid()[:8])
     directory.mkdir(parents=True)
     summaries, manifest = [], []
+    frames_by_item = {}
     for index, item in enumerate(items):
         run = item.get("latest_run")
         summary = dict(item_id=item["id"], video=item["name"], source_path=item["path"],
@@ -404,6 +387,7 @@ def export_batch(items, parent, progress=None):
             try:
                 output.mkdir(parents=True)
                 rows = load_rows(run)
+                frames_by_item[str(item["id"])] = rows
                 write_csv(output / "frame_analysis.csv", rows)
                 atomic_json(output / "settings.json", run)
                 summary["export_status"] = "completed"
@@ -429,14 +413,10 @@ def export_batch(items, parent, progress=None):
                             raise ValueError(source_error)
                         frame = read_exact_frame(item["path"], number)
                         mask, boxes, _ = segment_frame(frame, run["settings"])
-                        annotated = frame.copy()
-                        roi = run["settings"]["roi"]
-                        if roi:
-                            cv2.rectangle(annotated, tuple(roi[:2]), (roi[2] - 1, roi[3] - 1), (0, 255, 255), 2)
-                        if boxes:
-                            x, y, w, h, _ = boxes[0]
-                            cv2.rectangle(annotated, (x, y), (x + w - 1, y + h - 1), (0, 255, 0), 1)
-                            cv2.putText(annotated, f"{w} x {h}", (x, max(12, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, .4, (0, 255, 0), 1)
+                        annotated = compose_frame(frame, run["settings"], "Original",
+                                                  boxes=boxes,
+                                                  selected_indices=range(len(boxes)),
+                                                  include_bbox=True, include_roi=True)
                         for suffix, image in (("raw", frame), ("annotated", annotated), ("mask", mask)):
                             path = output / f"{event}_frame_{number:06d}_{suffix}.png"
                             write_png(path, image)
@@ -493,6 +473,12 @@ def export_batch(items, parent, progress=None):
     write_csv(directory / "batch_summary.csv", summaries)
     write_csv(directory / "event_images_manifest.csv", manifest)
     atomic_json(directory / "export_report.json", summaries)
+    try:
+        write_index(directory, items, summaries, manifest, frames_by_item)
+    except Exception as exc:
+        # The CSV/JSON/PNG export is still useful when an HTML write fails.
+        # Keep a human-readable marker so the UI can report the precise issue.
+        (directory / "index_generation_error.txt").write_text(str(exc), encoding="utf-8")
     return directory, summaries
 
 
