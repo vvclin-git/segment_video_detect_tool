@@ -111,7 +111,21 @@ class BatchWorkflowTests(unittest.TestCase):
         with (out / "event_images_manifest.csv").open(encoding="utf-8-sig") as source:
             records = list(csv.DictReader(source))
         self.assertEqual(len(records), 3)
+        with (out / "batch_summary.csv").open(encoding="utf-8-sig") as source:
+            exported_summary = next(csv.DictReader(source))
+        with next(out.rglob("frame_analysis.csv")).open(encoding="utf-8-sig") as source:
+            exported_frames = {int(row["frame"]): row for row in csv.DictReader(source)}
+        bbox_fields = ("bbox_x", "bbox_y", "bbox_width", "bbox_height", "bbox_center_x",
+                       "bbox_center_y", "bbox_valid", "largest_blob_area")
+        for row in rows:
+            for field in bbox_fields:
+                self.assertEqual(exported_frames[row["frame"]][field], "" if row[field] is None else str(row[field]))
         for record in records:
+            expected_row = rows[int(record["frame"]) - 1]
+            for field in bbox_fields:
+                expected_value = "" if expected_row[field] is None else str(expected_row[field])
+                self.assertEqual(record[field], expected_value)
+                self.assertEqual(exported_summary[record["event"] + "_" + field], expected_value)
             raw = cv2.imdecode(np.fromfile(out / record["raw_filename"], np.uint8), cv2.IMREAD_COLOR)
             expected = core.read_exact_frame(self.path, int(record["frame"]))
             np.testing.assert_array_equal(raw, expected)
@@ -119,6 +133,9 @@ class BatchWorkflowTests(unittest.TestCase):
         with next(out.rglob("run_summary.csv")).open(encoding="utf-8-sig") as source:
             metrics = {row["metric"]: row["value"] for row in csv.DictReader(source)}
         self.assertEqual(metrics["export_status"], "completed")
+        for prefix in core.EVENTS:
+            for field in bbox_fields:
+                self.assertEqual(metrics[prefix + "_" + field], exported_summary[prefix + "_" + field])
 
     def test_stable_event_without_bbox(self):
         self.item["settings"]["stable_confirm_frames"] = 1
