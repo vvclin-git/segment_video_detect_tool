@@ -10,6 +10,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import cv2
+from video_reader import ExactVideoCapture
 
 import batch_core as core
 from app import HSVVideoTester
@@ -75,7 +76,7 @@ class VideoEditor(HSVVideoTester):
             meta = core.probe_video(item["path"])
             self.preview_identity = core.source_identity(item["path"])
             core.validate_settings(self.initial, meta)
-            self.capture = cv2.VideoCapture(item["path"])
+            self.capture = ExactVideoCapture(item["path"])
             self.video_path = Path(item["path"])
             self.frame_count, self.fps = meta["frame_count"], meta["fps"]
             self.timeline.configure(to=self.frame_count - 1)

@@ -13,13 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
+from video_reader import ExactVideoCapture
 import numpy as np
 
 from frame_render import (IMAGE_MODES, LEGACY_BBOX_STYLE, compose_frame,
                            frame_filename, segment_frame, write_png)
 from result_index import write_index
 
-VERSION = "batch-1.0"
+VERSION = "batch-1.1-exact-frames"
 DEFAULTS = dict(lower=[160, 140, 80], upper=[179, 255, 255], min_area=20,
                 roi=None, start_percent=0.0, end_percent=100.0, window_n=5,
                 stable_on_m=4, stable_off_count=1, stable_confirm_frames=3)
@@ -92,7 +93,7 @@ def source_identity(path):
 def probe_video(path):
     if not Path(path).is_file():
         raise ValueError(f"找不到影片：{path}")
-    cap = cv2.VideoCapture(str(path))
+    cap = ExactVideoCapture(str(path))
     try:
         if not cap.isOpened():
             raise ValueError("無法開啟影片或不支援的編碼")
@@ -244,6 +245,8 @@ def stale_reason(item):
     run = item.get("latest_run")
     if not run:
         return ""
+    if run.get("version") != VERSION:
+        return "影格讀取版本已更新，請重新分析並檢查舊人工標註"
     if item["settings"] != run["settings"]:
         return "設定已變更"
     try:
@@ -294,7 +297,7 @@ def analyze_item(item, runs_dir, cancel=None, progress=None):
     try:
         if rows is None:
             rows = []
-            cap = cv2.VideoCapture(item["path"])
+            cap = ExactVideoCapture(item["path"])
             if not cap.isOpened():
                 raise ValueError("無法重新開啟影片")
             if start and not cap.set(cv2.CAP_PROP_POS_FRAMES, start):
@@ -349,8 +352,10 @@ def write_csv(path, rows, fields=None):
 
 
 def read_exact_frame(path, number, capture=None):
-    own = capture is None
-    cap = capture if capture is not None else cv2.VideoCapture(str(path))
+    # A raw OpenCV capture has no trustworthy ordinal after seeking.
+    # Keep accepting it for callers, but use a separate exact reader.
+    own = not isinstance(capture, ExactVideoCapture)
+    cap = ExactVideoCapture(str(path)) if own else capture
     try:
         if not cap.isOpened() or not cap.set(cv2.CAP_PROP_POS_FRAMES, number - 1):
             raise ValueError(f"無法跳至 frame {number}")

@@ -202,3 +202,25 @@ The manifest records each exported event's frame, timestamp, detection state, bb
 3. Drag again to replace it, or click **Clear ROI** to analyze the full frame.
 
 The yellow rectangle is the ROI. Green rectangles are accepted blobs.
+
+## Exact frame access (including VFR video)
+
+Preview, review, analysis, independent viewers and PNG exports use the same
+decoded-frame ordering. Backend frame seeking is not used: some VFR inputs return
+the wrong image even when OpenCV reports the requested frame number. The reader
+counts frames from the beginning and caches nearby images (up to 64 MiB).
+Opening a video first counts its decodable frames; this count is cached for the
+unchanged file during the session. Initial opening and uncached backward jumps
+can therefore take longer on large videos. Displayed seconds remain nominal
+`frame_index / reported_fps`, not the source's VFR presentation timestamps.
+
+Rerun older analyses after upgrading, re-export event images, and review existing
+manual annotations: their saved frame numbers are preserved and are not shifted
+automatically. Percentage bounds now use the actual decoded frame count.
+
+Run the regression suite with `python -m unittest discover -v`. The supplied
+debug-video case can additionally be checked with
+`python verify_debug_video.py <debug_data_folder> <verification_output_folder>`;
+this checks a sequential baseline, full and partial analysis, navigation, event
+exports, and the actual Tk review/independent viewer paths. It writes a
+`verification.json` report and separate analysis/export artifacts.

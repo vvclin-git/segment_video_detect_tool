@@ -9,6 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import cv2
+from video_reader import ExactVideoCapture
 import numpy as np
 from PIL import Image, ImageTk
 
@@ -64,7 +65,7 @@ class FrameViewer:
         self.settings = copy.deepcopy(snapshot.settings)
         self.frame_count = max(1, int(snapshot.frame_count))
         self.fps = float(snapshot.fps or 30.0)
-        self.capture: cv2.VideoCapture | None = None
+        self.capture: ExactVideoCapture | None = None
         self.frame_index = int(snapshot.frame_number) - 1
         self.frame = snapshot.frame.copy()
         self.boxes = list(snapshot.boxes)
@@ -87,7 +88,7 @@ class FrameViewer:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._build_ui()
         if self.source_path is not None:
-            self.capture = cv2.VideoCapture(str(self.source_path))
+            self.capture = ExactVideoCapture(str(self.source_path))
             if not self.capture.isOpened():
                 self.capture.release()
                 self.capture = None
@@ -471,7 +472,7 @@ class HSVVideoTester:
         self.root = root
         root.title("ECU Segmentation Video Validator")
         root.geometry("1450x900")
-        self.capture: cv2.VideoCapture | None = None
+        self.capture: ExactVideoCapture | None = None
         self.video_path: Path | None = None
         self.frame: np.ndarray | None = None
         self.frame_index = self.frame_count = 0
@@ -646,7 +647,7 @@ class HSVVideoTester:
             filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.m4v"), ("All files", "*.*")])
         if not path:
             return
-        capture = cv2.VideoCapture(path)
+        capture = ExactVideoCapture(path)
         if not capture.isOpened():
             messagebox.showerror("Open failed", "OpenCV could not open this video.")
             return
@@ -1130,7 +1131,7 @@ class HSVVideoTester:
         self.analysis_start_frame.set(start_frame)
         start_index = start_frame - 1
         self.playing = False
-        scan = cv2.VideoCapture(str(self.video_path))
+        scan = ExactVideoCapture(str(self.video_path))
         if not scan.isOpened():
             messagebox.showerror("Analysis failed", "Could not reopen the video.")
             return
@@ -1308,7 +1309,7 @@ class HSVVideoTester:
             return
         output_dir = Path(parent) / f"{self.video_path.stem}_event_frames"
         output_dir.mkdir(parents=True, exist_ok=True)
-        capture = cv2.VideoCapture(str(self.video_path))
+        capture = ExactVideoCapture(str(self.video_path))
         if not capture.isOpened():
             messagebox.showerror("Export failed", "Could not reopen the video.")
             return
