@@ -39,6 +39,26 @@ class MisleadingCapture:
 
 class ExactReaderTests(unittest.TestCase):
     @patch("video_reader.cv2.VideoCapture", MisleadingCapture)
+    def test_cached_ranges_exclude_skipped_frames_and_follow_eviction(self):
+        cap = ExactVideoCapture(__file__)
+        try:
+            self.assertEqual(cap.cached_ranges(), ())
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 25)
+            cap.read()
+            self.assertEqual(cap.cached_ranges(), ((26, 26),))
+            cap.read()
+            self.assertEqual(cap.cached_ranges(), ((26, 27),))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            cap.read()
+            self.assertEqual(cap.cached_ranges(), ((1, 1), (26, 27)))
+            for _ in range(20):
+                cap.read()
+            self.assertEqual(cap.cached_ranges(), ((6, 21),))
+        finally:
+            cap.release()
+        self.assertEqual(cap.cached_ranges(), ())
+
+    @patch("video_reader.cv2.VideoCapture", MisleadingCapture)
     def test_progress_count_seek_and_cached_playback(self):
         _frame_counts.clear()
         updates = []

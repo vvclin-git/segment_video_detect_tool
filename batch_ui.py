@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import cv2
 from video_reader import ExactVideoCapture
+from buffer_timeline import BufferTimeline
 from video_progress import show_video_progress
 
 import batch_core as core
@@ -187,6 +188,8 @@ class VideoEditor(HSVVideoTester):
         ttk.Label(nav, text="← / → 逐幀").pack(side="right")
         self.timeline = ttk.Scale(left, from_=0, to=1, command=self.seek)
         self.timeline.pack(fill="x")
+        self.buffer_timeline = BufferTimeline(left)
+        self.buffer_timeline.pack(fill="x")
         ttk.Label(left, textvariable=self.status).pack(anchor="w", pady=5)
         if self.review:
             plot_item = copy.deepcopy(self.item)
@@ -394,7 +397,7 @@ class VideoEditor(HSVVideoTester):
             return
         index = max(0, min(index, self.frame_count - 1))
         if index != self.frame_index:
-            self.clear_bbox_selection()
+            self.clear_bbox_selection(render=False)
         try:
             self.frame = core.read_exact_frame(self.video_path, index + 1, self.capture)
         except ValueError as exc:

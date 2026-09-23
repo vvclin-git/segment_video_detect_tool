@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import copy
 import tkinter as tk
+from time import perf_counter
 from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import cv2
 from video_reader import ExactVideoCapture
+from buffer_timeline import BufferTimeline
 from video_progress import show_video_progress
 import numpy as np
 from PIL import Image, ImageTk
@@ -147,6 +149,8 @@ class FrameViewer:
         ttk.Button(navigation, text="◀ 上一幀", command=lambda: self.step(-1)).pack(side=tk.LEFT)
         ttk.Button(navigation, text="下一幀 ▶", command=lambda: self.step(1)).pack(side=tk.LEFT, padx=4)
         ttk.Label(navigation, textvariable=self.frame_status).pack(side=tk.LEFT, padx=8)
+        self.buffer_timeline = BufferTimeline(left)
+        self.buffer_timeline.pack(fill=tk.X)
 
     def _build_style_controls(self, parent: ttk.Widget) -> None:
         group = ttk.LabelFrame(parent, text="bbox 出圖樣式", padding=7)
@@ -263,7 +267,7 @@ class FrameViewer:
         self._update_frame_controls()
         self.render()
 
-    def clear_bbox_selection(self) -> None:
+    def clear_bbox_selection(self, render=True) -> None:
         self.selected_bboxes.clear()
         self.include_bbox.set(False)
         self._update_frame_controls()
@@ -338,6 +342,9 @@ class FrameViewer:
         self.render()
 
     def render(self) -> None:
+        if hasattr(self, "buffer_timeline"):
+            self.buffer_timeline.set_state(self.frame_count, self.frame_index + 1,
+                                           self.capture.cached_ranges() if self.capture else ())
         if self._closed or not self.root.winfo_exists():
             return
         try:
@@ -556,6 +563,8 @@ class HSVVideoTester:
         ttk.Label(navigation, text="Keyboard: ← previous / → next").pack(side=tk.RIGHT)
         self.timeline = ttk.Scale(left, from_=0, to=1, orient=tk.HORIZONTAL, command=self.seek)
         self.timeline.pack(fill=tk.X, pady=(6, 0))
+        self.buffer_timeline = BufferTimeline(left)
+        self.buffer_timeline.pack(fill=tk.X)
         ttk.Label(left, textvariable=self.status).pack(anchor=tk.W)
         ttk.Progressbar(left, variable=self.progress, maximum=100).pack(fill=tk.X, pady=(3, 0))
         controls = ttk.LabelFrame(right, text="HSV and raw detection", padding=8)
@@ -681,7 +690,7 @@ class HSVVideoTester:
             return
         index = max(0, min(index, self.frame_count - 1))
         if self.batch_features and index != self.frame_index:
-            self.clear_bbox_selection()
+            self.clear_bbox_selection(render=False)
         self.capture.set(cv2.CAP_PROP_POS_FRAMES, index)
         ok, frame = self.capture.read()
         if ok:
@@ -698,6 +707,8 @@ class HSVVideoTester:
             self.playing = not self.playing
             if self.playing:
                 self._play_tick()
+            else:
+                self.render()
 
     def _play_tick(self) -> None:
         if not self.playing:
@@ -705,8 +716,11 @@ class HSVVideoTester:
         if self.frame_index + 1 >= self.frame_count:
             self.playing = False
             return
+        started = perf_counter()
         self.read_frame(self.frame_index + 1)
-        self.after_id = self.root.after(max(1, round(1000 / self.fps)), self._play_tick)
+        if self.playing:
+            delay = max(1, round(1000 * (1 / self.fps - (perf_counter() - started))))
+            self.after_id = self.root.after(delay, self._play_tick)
 
     def step(self, amount: int) -> None:
         self.playing = False
@@ -736,13 +750,13 @@ class HSVVideoTester:
             self.playing = False
             self.read_frame(index)
 
-    def clear_bbox_selection(self) -> None:
+    def clear_bbox_selection(self, render=True) -> None:
         """Clear selected boxes without changing the current frame or view."""
         self.selected_bboxes.clear()
         tree = getattr(self, "tree", None)
         if tree is not None and tree.winfo_exists():
             tree.selection_remove(tree.selection())
-        if getattr(self, "frame", None) is not None and getattr(self, "batch_features", False):
+        if render and getattr(self, "frame", None) is not None and getattr(self, "batch_features", False):
             self.render()
 
     def select_all_bboxes(self) -> None:
@@ -986,22 +1000,7 @@ class HSVVideoTester:
             viewer.close()
 
     def analyze_frame(self, frame: np.ndarray) -> tuple[np.ndarray, list[tuple[int, int, int, int, int]], int]:
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        lower = np.array([self.h_min.get(), self.s_min.get(), self.v_min.get()], dtype=np.uint8)
-        upper = np.array([self.h_max.get(), self.s_max.get(), self.v_max.get()], dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
-        height, width = mask.shape
-        x1, y1, x2, y2 = self.roi or (0, 0, width, height)
-        roi_mask = np.zeros_like(mask)
-        roi_mask[y1:y2, x1:x2] = mask[y1:y2, x1:x2]
-        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(roi_mask, connectivity=8)
-        boxes = []
-        for index in range(1, count):
-            x, y, box_w, box_h, area = map(int, stats[index])
-            if area >= self.min_area.get():
-                boxes.append((x, y, box_w, box_h, area))
-        boxes.sort(key=lambda item: item[4], reverse=True)
-        return roi_mask, boxes, cv2.countNonZero(roi_mask)
+        return segment_frame(frame, self._frame_settings())
 
     @staticmethod
     def create_event_mask(frame: np.ndarray, config: dict[str, object]) -> np.ndarray:
@@ -1029,12 +1028,16 @@ class HSVVideoTester:
         return True
 
     def render(self) -> None:
+        if hasattr(self, "buffer_timeline"):
+            self.buffer_timeline.set_state(self.frame_count, self.frame_index + 1,
+                                           self.capture.cached_ranges() if self.capture else ())
         if self.frame is None or self.canvas.winfo_width() < 2:
             return
         mask, boxes, pixels = self.analyze_frame(self.frame)
         if self.batch_features:
             output = compose_frame(self.frame, self._frame_settings(), self.view_mode.get(),
-                                   boxes=boxes, highlight_indices=self.selected_bboxes)
+                                   boxes=boxes, highlight_indices=self.selected_bboxes,
+                                   analysis=(mask, boxes, pixels))
         else:
             if self.view_mode.get() == "Mask":
                 output = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
@@ -1053,7 +1056,10 @@ class HSVVideoTester:
             cv2.rectangle(output, (x1, y1), (x2 - 1, y2 - 1), (0, 255, 255), 2)
         self._show_on_canvas(output)
         self._update_stats(boxes, pixels)
-        self.draw_histogram()
+        now = perf_counter()
+        if not self.playing or now - getattr(self, "_histogram_updated", 0) >= 0.2:
+            self.draw_histogram()
+            self._histogram_updated = now
 
     def draw_histogram(self) -> None:
         if self.frame is None:

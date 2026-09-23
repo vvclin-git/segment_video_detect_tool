@@ -191,22 +191,32 @@ def _draw_bboxes_legacy(
 
 def segment_frame(frame: np.ndarray, settings: dict[str, object]):
     """Return ``mask, boxes, selected_pixel_count`` for an original frame."""
-    mask = cv2.inRange(
-        cv2.cvtColor(frame, cv2.COLOR_BGR2HSV),
+    height, width = frame.shape[:2]
+    x1, y1, x2, y2 = map(int, settings.get("roi") or (0, 0, width, height))
+    x1, x2, _ = slice(x1, x2).indices(width)
+    y1, y2, _ = slice(y1, y2).indices(height)
+    mask = np.zeros((height, width), dtype=np.uint8)
+    if x2 <= x1 or y2 <= y1:
+        return mask, [], 0
+    selected = cv2.inRange(
+        cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2HSV),
         np.array(settings["lower"], dtype=np.uint8),
         np.array(settings["upper"], dtype=np.uint8),
     )
-    roi = settings.get("roi")
-    if roi is not None:
-        x1, y1, x2, y2 = map(int, roi)
-        roi_mask = np.zeros_like(mask)
-        roi_mask[y1:y2, x1:x2] = mask[y1:y2, x1:x2]
-        mask = roi_mask
-    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    mask[y1:y2, x1:x2] = selected
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(selected, connectivity=8)
+    stats[:, 0] += x1
+    stats[:, 1] += y1
     boxes = [tuple(map(int, stats[i])) for i in range(1, count)
              if int(stats[i, 4]) >= int(settings["min_area"])]
+    # Backend component labels can change after cropping. Preserve the original
+    # tie ordering (including the chosen largest bbox) when equal areas occur.
+    if len({box[4] for box in boxes}) != len(boxes):
+        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        boxes = [tuple(map(int, stats[i])) for i in range(1, count)
+                 if int(stats[i, 4]) >= int(settings["min_area"])]
     boxes.sort(key=lambda box: box[4], reverse=True)
-    return mask, boxes, int(cv2.countNonZero(mask))
+    return mask, boxes, int(cv2.countNonZero(selected))
 
 
 def draw_bboxes(
@@ -242,6 +252,7 @@ def compose_frame(
     include_bbox: bool = False,
     include_roi: bool = False,
     bbox_style: BboxStyle | Mapping[str, object] = DEFAULT_BBOX_STYLE,
+    analysis=None,
 ) -> np.ndarray:
     """Compose one original-resolution BGR image for preview or export.
 
@@ -258,10 +269,10 @@ def compose_frame(
         return frame.copy()
 
     if mode == "Mask":
-        mask, detected_boxes, _ = segment_frame(frame, settings)
+        mask, detected_boxes, _ = analysis if analysis is not None else segment_frame(frame, settings)
         output = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
     elif mode == "Overlay":
-        mask, detected_boxes, _ = segment_frame(frame, settings)
+        mask, detected_boxes, _ = analysis if analysis is not None else segment_frame(frame, settings)
         output = frame.copy()
         selected_pixels = mask > 0
         tint = np.zeros_like(output)

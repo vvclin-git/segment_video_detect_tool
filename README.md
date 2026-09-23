@@ -220,6 +220,10 @@ can therefore take longer on large videos. Displayed seconds remain nominal
 
 開檔計數與預覽跳幀期間，狀態列會更新「處理中」、已讀取幀數及耗時；跳幀另顯示目標幀與百分比。計數尚未完成時不顯示推測的總幀數。訊息約每 0.2 秒更新，完成後恢復正常影格資訊。此提示改善等待回饋，解碼仍同步執行，等待期間尚不能即時取消或操作其他控制項。
 
+播放時每個新影格只分析一次，Overlay／Mask 共用結果；換幀清除 bbox 選取不再重畫上一幀。HSV 與連通區分析優先使用 ROI，bbox 座標仍為原圖座標，面積相同時保留原有排序。直方圖播放時最多每秒更新五次，暫停／逐幀時立即更新；播放排程扣除本幀處理耗時，不略過影格。這些改善不改變原始圖片匯出或精確影格讀取方式。
+
+時間軸下方的緩衝條以綠色顯示實際保留在記憶體的影格、藍線顯示目前位置、灰色顯示未快取區段；下方列出快取幀數與範圍，滑鼠移入可查看對應幀是否已快取。播放、跳幀與快取淘汰會同步更新，可顯示不連續區段。獨立視窗使用自己的快取。這是目前記憶體快取的顯示，不代表整段影片已預讀；僅為計數或跳幀而解碼略過的影格不會標綠。
+
 Rerun older analyses after upgrading, re-export event images, and review existing
 manual annotations: their saved frame numbers are preserved and are not shifted
 automatically. Percentage bounds now use the actual decoded frame count.

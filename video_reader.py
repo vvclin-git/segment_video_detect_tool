@@ -75,6 +75,20 @@ class ExactVideoCapture:
     def isOpened(self):
         return self._cap.isOpened()
 
+    def cached_ranges(self):
+        """Return inclusive, 1-based ranges of images actually held in memory.
+
+        Frames merely skipped by grab() or scanned for counting are excluded.
+        """
+        ranges = []
+        for index in sorted(self._cache):
+            number = index + 1
+            if ranges and number == ranges[-1][1] + 1:
+                ranges[-1] = (ranges[-1][0], number)
+            else:
+                ranges.append((number, number))
+        return tuple(ranges)
+
     def get(self, prop):
         if prop == cv2.CAP_PROP_POS_FRAMES:
             return float(self._position)
