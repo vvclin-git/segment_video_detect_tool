@@ -26,6 +26,8 @@ DEFAULTS = dict(lower=[160, 140, 80], upper=[179, 255, 255], min_area=20,
                 stable_on_m=4, stable_off_count=1, stable_confirm_frames=3)
 EVENTS = ("first_detection", "first_sustained_stable_start", "first_stable_confirmation")
 MANUAL_EVENTS = {"manual_first_detection": "人工首次檢出", "manual_stable_confirmation": "人工穩定確認"}
+MANUAL_START = "manual_sustained_stable_start"
+ALL_MANUAL_EVENTS = {**MANUAL_EVENTS, MANUAL_START: "人工穩定起點（回推）"}
 
 
 def uid():
@@ -120,10 +122,12 @@ def new_item(path, **labels):
     return item
 
 
-def set_manual_event(item, event, frame, note="", expected_identity=None):
+def set_manual_event(item, event, frame, note="", expected_identity=None, settings=None):
     if event not in MANUAL_EVENTS:
         raise ValueError("不支援的人工事件類型")
     meta = probe_video(item["path"])
+    config = copy.deepcopy(settings if settings is not None else item["settings"])
+    validate_settings(config, meta)
     if type(frame) is not int or not 1 <= frame <= meta["frame_count"]:
         raise ValueError(f'事件 frame 必須是 1–{meta["frame_count"]} 的整數')
     identity = source_identity(item["path"])
@@ -133,9 +137,40 @@ def set_manual_event(item, event, frame, note="", expected_identity=None):
     if source_identity(item["path"]) != identity:
         raise ValueError("標註期間來源影片已變更，請重新開啟")
     annotation = dict(frame=frame, timestamp=(frame - 1) / meta["fps"], note=note,
-                      updated_at=now(), source_identity=identity, timestamp_basis=meta["timestamp_basis"])
+                      updated_at=now(), source_identity=identity, timestamp_basis=meta["timestamp_basis"],
+                      settings=config, fps=meta["fps"])
     item.setdefault("manual_events", {})[event] = annotation
     return annotation
+
+
+def manual_event_settings(item, annotation):
+    """Legacy annotations use the saved run, or item settings without a run."""
+    return copy.deepcopy(annotation.get("settings") or
+                         item.get("latest_run", {}).get("settings") or item["settings"])
+
+
+def resolved_manual_events(item):
+    """Derive the start on demand so editing/clearing confirmation cannot orphan it."""
+    events = copy.deepcopy(item.get("manual_events", {}))
+    events.pop(MANUAL_START, None)
+    for event, annotation in events.items():
+        if event in MANUAL_EVENTS:
+            annotation["settings"] = manual_event_settings(item, annotation)
+    confirmation = events.get("manual_stable_confirmation")
+    if confirmation:
+        settings = manual_event_settings(item, confirmation)
+        k = settings["stable_confirm_frames"]
+        number = max(1, confirmation["frame"] - k + 1)
+        fps = confirmation.get("fps") or item.get("latest_run", {}).get("metadata", {}).get("fps") or item.get("metadata", {}).get("fps")
+        # Older annotations already contain nominal frame timestamps.
+        if not fps and confirmation["frame"] > 1 and confirmation["timestamp"] > 0:
+            fps = (confirmation["frame"] - 1) / confirmation["timestamp"]
+        start = copy.deepcopy(confirmation)
+        start.update(frame=number, timestamp=(number - 1) / fps if number > 1 else 0.0,
+                     settings=settings, derived_from="manual_stable_confirmation",
+                     stable_confirm_frames=k, clamped_to_first_frame=confirmation["frame"] < k)
+        events[MANUAL_START] = start
+    return events
 
 
 def manual_event_reason(item, annotation):
@@ -147,11 +182,15 @@ def manual_event_reason(item, annotation):
 
 def manual_summary(item):
     result = {}
-    for event in MANUAL_EVENTS:
-        annotation = item.get("manual_events", {}).get(event)
+    annotations = resolved_manual_events(item)
+    for event in ALL_MANUAL_EVENTS:
+        annotation = annotations.get(event)
         for field in ("frame", "timestamp", "note", "updated_at"):
             result[f"{event}_{field}"] = annotation.get(field) if annotation else None
         result[f"{event}_status"] = (manual_event_reason(item, annotation) or "valid") if annotation else "unmarked"
+    start = annotations.get(MANUAL_START, {})
+    for field in ("stable_confirm_frames", "clamped_to_first_frame"):
+        result[f"{MANUAL_START}_{field}"] = start.get(field)
     return result
 
 
@@ -442,14 +481,17 @@ def export_batch(items, parent, progress=None):
             for event in EVENTS:
                 manifest.append(dict(item_id=item["id"], run_id="", event=event, frame=None,
                                      status="no_results", error=item.get("error") or item["status"]))
-        annotations = item.get("manual_events", {})
+        annotations = resolved_manual_events(item)
         for event, annotation in annotations.items():
-            if event not in MANUAL_EVENTS:
+            if event not in ALL_MANUAL_EVENTS:
                 continue
             record = dict(item_id=item["id"], run_id="", event=event, event_source="manual",
                           frame=annotation["frame"], timestamp=annotation["timestamp"],
                           note=annotation.get("note", ""), updated_at=annotation.get("updated_at", ""),
-                          status="failed", error="", raw_filename="")
+                          derived_from=annotation.get("derived_from", ""),
+                          stable_confirm_frames=annotation.get("stable_confirm_frames", ""),
+                          clamped_to_first_frame=annotation.get("clamped_to_first_frame", ""),
+                          status="failed", error="", raw_filename="", overlay_filename="", mask_filename="")
             manifest.append(record)
             try:
                 manual_dir = directory / item["id"] / "manual_events"
@@ -459,9 +501,15 @@ def export_batch(items, parent, progress=None):
                 if reason:
                     raise ValueError(reason)
                 frame = read_exact_frame(item["path"], annotation["frame"])
-                path = manual_dir / f'{event}_frame_{annotation["frame"]:06d}_raw.png'
-                write_png(path, frame)
-                record.update(status="completed", raw_filename=path.relative_to(directory).as_posix())
+                config = manual_event_settings(item, annotation)
+                mask, boxes, _ = segment_frame(frame, config)
+                overlay = compose_frame(frame, config, "Overlay", boxes=boxes,
+                                        include_bbox=True, include_roi=True, bbox_style=LEGACY_BBOX_STYLE)
+                for suffix, image in (("raw", frame), ("overlay", overlay), ("mask", mask)):
+                    path = manual_dir / f'{event}_frame_{annotation["frame"]:06d}_{suffix}.png'
+                    write_png(path, image)
+                    record[suffix + "_filename"] = path.relative_to(directory).as_posix()
+                record["status"] = "completed"
                 if summary["export_status"] == "no_results":
                     summary["export_status"] = "manual_only"
             except (OSError, ValueError, cv2.error) as exc:

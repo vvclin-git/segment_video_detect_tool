@@ -46,7 +46,11 @@ uv run python app.py
 
 可以標註分析區段外、但仍在原影片有效範圍內的幀。這類事件在結果摘要顯示「分析範圍外」，只有落在圖表目前範圍內的事件才畫線；跳幀預覽仍可使用。來源影片被更換時保留原標註並提示重新確認，不用新影片匯出舊標註截圖。
 
-批次總表新增 `manual_first_detection_*`、`manual_stable_confirmation_*` 的 frame／timestamp／note／updated_at／status 欄位。另在 `<item_id>/manual_events/` 匯出 `manual_events.json` 與人工事件的完整原始 PNG；manifest 的 `event_source=manual` 識別人工事件。只有人工標註而尚無自動分析的項目，匯出狀態為 `manual_only`。人工標註不推算或捏造自動 bbox／rolling 數據。
+儲存「人工穩定確認」時，自動回推「人工穩定起點」：`確認 frame − Confirm K + 1`。例如確認 F2189、K=150，起點為 F2040。起點早於影片開頭時截至 F1，並標示截斷。上方「回推穩定起點」按鈕可直接跳到該幀；結果摘要、時間軸與離線匯出索引也會列出起點。修改確認幀會更新起點，清除確認則一併移除起點。
+
+新標註保存當時的 K、HSV、ROI 與最小面積；複核視窗使用該次分析的設定，設定／預覽視窗使用目前設定，日後修改參數不會改變已保存標註的回推結果與截圖設定。舊標註沒有設定快照時，使用已保存分析設定，無分析時使用項目設定；如需固定為新的設定，請重新儲存標註。
+
+批次總表包含 `manual_first_detection_*`、`manual_stable_confirmation_*`、`manual_sustained_stable_start_*` 的 frame／timestamp／note／updated_at／status 欄位，另記錄回推 K 與是否截至開頭。在 `<item_id>/manual_events/` 匯出 `manual_events.json`，以及每個人工事件的完整原始 `*_raw.png`、帶 ROI／bbox 的 `*_overlay.png` 和 HSV／ROI 二值 `*_mask.png`；三種事件都有時共九張圖。manifest 的 `event_source=manual` 識別人工事件，`derived_from` 識別回推起點，並提供三種圖片的相對路徑。只有人工標註而尚無自動分析的項目，匯出狀態為 `manual_only`。人工標註不改寫自動 bbox／rolling 紀錄。
 
 ### pairing.json 匯入
 

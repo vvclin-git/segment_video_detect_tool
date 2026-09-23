@@ -146,7 +146,7 @@ class VideoEditor(HSVVideoTester):
         manual_entry.pack(side="left")
         manual_entry.bind("<Return>", lambda _: self.save_manual())
         for label, callback in (("標記目前幀", self.mark_current), ("儲存標註", self.save_manual),
-                                ("跳到標註", self.jump_manual), ("清除標註", self.clear_manual)):
+                                ("跳到標註", self.jump_manual), ("回推穩定起點", self.jump_manual_start), ("清除標註", self.clear_manual)):
             ttk.Button(line, text=label, command=callback).pack(side="left", padx=3)
         ttk.Label(line, text="備註").pack(side="left", padx=3)
         ttk.Entry(line, textvariable=self.manual_note).pack(side="left", fill="x", expand=True)
@@ -305,10 +305,31 @@ class VideoEditor(HSVVideoTester):
         else:
             self.manual_status.set("尚未標註；可輸入 frame 後儲存，或直接標記目前幀。不需先執行自動分析。")
 
+        start = core.resolved_manual_events(self.item).get(core.MANUAL_START)
+        if start:
+            suffix = "（已截至影片開頭）" if start["clamped_to_first_frame"] else ""
+            self.manual_status.set(self.manual_status.get() +
+                                   f' · 人工穩定起點 F{start["frame"]}（K={start["stable_confirm_frames"]}）{suffix}')
+
+    def jump_manual_start(self):
+        annotation = core.resolved_manual_events(self.item).get(core.MANUAL_START)
+        if annotation is None:
+            self.manual_status.set("請先儲存人工穩定確認，即可自動回推起點。")
+            return
+        reason = core.manual_event_reason(self.item, annotation)
+        if reason:
+            error(self.root, reason)
+            return
+        self.playing = False
+        self.read_frame(annotation["frame"] - 1)
+        if self.review:
+            self.zoom_review(annotation["frame"])
+
     def save_manual(self):
         try:
             number = int(self.manual_frame.get().strip())
-            core.set_manual_event(self.item, self.manual_key(), number, self.manual_note.get(), self.preview_identity)
+            core.set_manual_event(self.item, self.manual_key(), number, self.manual_note.get(), self.preview_identity,
+                                  settings=self.initial if self.review else self.config())
             self.owner.changed()
             self.load_manual_fields()
             if self.owner.dirty:
@@ -552,19 +573,19 @@ class DetectionPlot(tk.Canvas):
                 self.create_text(x - 4 if x > x2 - 100 else x + 4, y,
                                  anchor="e" if x > x2 - 100 else "w", text=label, fill=color, tags=prefix)
         # Human annotations do not change the automatic series or first events.
-        for index, (event, annotation) in enumerate(self.item.get("manual_events", {}).items()):
+        for index, (event, annotation) in enumerate(core.resolved_manual_events(self.item).items()):
             number = annotation["frame"]
-            if event not in core.MANUAL_EVENTS or not self.low <= number <= self.high:
+            if event not in core.ALL_MANUAL_EVENTS or not self.low <= number <= self.high:
                 continue
             if self.manual_valid is None:
                 self.manual_valid = {key: not core.manual_event_reason(self.item, value)
-                                     for key, value in self.item.get("manual_events", {}).items()}
+                                     for key, value in core.resolved_manual_events(self.item).items()}
             if not self.manual_valid.get(event):
                 continue
             x = x1 + (number - self.low) / max(1, self.high - self.low) * (x2 - x1)
             self.create_line(x, top, x, bottom, fill="#ee9bff", dash=(2, 2), width=2, tags="manual_event")
             self.create_text(x - 4 if x > x2 - 110 else x + 4, 108 + 17 * index,
-                             anchor="e" if x > x2 - 110 else "w", text=core.MANUAL_EVENTS[event],
+                             anchor="e" if x > x2 - 110 else "w", text=core.ALL_MANUAL_EVENTS[event],
                              fill="#ee9bff", tags="manual_event")
         self.set_cursor(self.cursor)
 
@@ -1144,8 +1165,8 @@ class BatchApp:
                     ttk.Label(left, text="下方顯示前次完成結果 · " + run["run_id"][:8], foreground="#9d5814").pack(anchor="w")
             if item.get("error"):
                 ttk.Label(left, text=item["error"], wraplength=310, foreground="#ae3535").pack(anchor="w")
-            for event, label in core.MANUAL_EVENTS.items():
-                annotation = item.get("manual_events", {}).get(event)
+            for event, label in core.ALL_MANUAL_EVENTS.items():
+                annotation = core.resolved_manual_events(item).get(event)
                 if annotation:
                     reason = core.manual_event_reason(item, annotation)
                     text = f'{label}: F{annotation["frame"]} · {annotation["timestamp"]:.3f}s'
