@@ -92,10 +92,10 @@ def source_identity(path):
     return dict(size=stat.st_size, sample_sha256=digest.hexdigest())
 
 
-def probe_video(path):
+def probe_video(path, progress=None):
     if not Path(path).is_file():
         raise ValueError(f"找不到影片：{path}")
-    cap = ExactVideoCapture(str(path))
+    cap = ExactVideoCapture(str(path), progress=progress)
     try:
         if not cap.isOpened():
             raise ValueError("無法開啟影片或不支援的編碼")
@@ -110,13 +110,13 @@ def probe_video(path):
         cap.release()
 
 
-def new_item(path, **labels):
+def new_item(path, progress=None, **labels):
     item = dict(id=uid(), path=str(Path(path).resolve()), name=Path(path).name,
                 session="", camera="", segment="", scenario_id="", phase="", note="", settings=copy.deepcopy(DEFAULTS),
                 status="pending", error="", runs=[], manual_events={})
     item.update(labels)
     try:
-        item["metadata"] = probe_video(path)
+        item["metadata"] = probe_video(path, progress=progress)
     except (ValueError, OSError) as exc:
         item.update(metadata={}, status="failed", error=str(exc))
     return item

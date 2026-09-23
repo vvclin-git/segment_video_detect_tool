@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import cv2
 from video_reader import ExactVideoCapture
+from video_progress import show_video_progress
 import numpy as np
 from PIL import Image, ImageTk
 
@@ -88,7 +89,7 @@ class FrameViewer:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._build_ui()
         if self.source_path is not None:
-            self.capture = ExactVideoCapture(str(self.source_path))
+            self.capture = ExactVideoCapture(str(self.source_path), progress=self._video_progress)
             if not self.capture.isOpened():
                 self.capture.release()
                 self.capture = None
@@ -362,6 +363,10 @@ class FrameViewer:
     def step(self, amount: int) -> str:
         self.read_frame(self.frame_index + amount)
         return "break"
+
+    def _video_progress(self, phase, completed, target, elapsed):
+        variable = self.frame_status if hasattr(self, "frame_status") else self.status
+        show_video_progress(self.root, variable, phase, completed, target, elapsed)
 
     def read_frame(self, index: int) -> None:
         if self.capture is None or self._closed:
@@ -647,7 +652,7 @@ class HSVVideoTester:
             filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.m4v"), ("All files", "*.*")])
         if not path:
             return
-        capture = ExactVideoCapture(path)
+        capture = ExactVideoCapture(path, progress=self._video_progress)
         if not capture.isOpened():
             messagebox.showerror("Open failed", "OpenCV could not open this video.")
             return
@@ -667,6 +672,10 @@ class HSVVideoTester:
         self.root.title(f"ECU Segmentation Video Validator - {self.video_path.name}")
         self.read_frame(0)
 
+    def _video_progress(self, phase, completed, target, elapsed):
+        variable = self.frame_status if hasattr(self, "frame_status") else self.status
+        show_video_progress(self.root, variable, phase, completed, target, elapsed)
+
     def read_frame(self, index: int) -> None:
         if self.capture is None:
             return
@@ -682,6 +691,7 @@ class HSVVideoTester:
             self.render()
         else:
             self.playing = False
+            self.status.set(f"讀取第 {index + 1} 幀失敗，已停止播放。")
 
     def toggle_play(self) -> None:
         if self.capture is not None:

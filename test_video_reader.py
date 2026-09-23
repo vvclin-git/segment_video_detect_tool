@@ -5,7 +5,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from video_reader import ExactVideoCapture
+from video_reader import ExactVideoCapture, _frame_counts
 
 
 class MisleadingCapture:
@@ -38,6 +38,29 @@ class MisleadingCapture:
 
 
 class ExactReaderTests(unittest.TestCase):
+    @patch("video_reader.cv2.VideoCapture", MisleadingCapture)
+    def test_progress_count_seek_and_cached_playback(self):
+        _frame_counts.clear()
+        updates = []
+        cap = ExactVideoCapture(__file__, progress=lambda *args: updates.append(args))
+        try:
+            self.assertEqual(cap.get(cv2.CAP_PROP_FRAME_COUNT), 40)
+            self.assertEqual(updates[0][1:3], (0, None))
+            self.assertEqual(updates[-1][1:3], (40, None))
+            updates.clear()
+            self.assertEqual(cap.get(cv2.CAP_PROP_FRAME_COUNT), 40)
+            self.assertFalse(updates, "Cached frame count should not claim to scan again")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 25)
+            self.assertTrue(np.all(cap.read()[1] == 25))
+            self.assertEqual(updates[0][1:3], (0, 26))
+            self.assertEqual(updates[-1][1:3], (26, 26))
+            updates.clear()
+            self.assertTrue(cap.read()[0])
+            self.assertFalse(updates, "Consecutive playback should not repaint busy text")
+        finally:
+            cap.release()
+            _frame_counts.clear()
+
     @patch("video_reader.cv2.VideoCapture", MisleadingCapture)
     def test_forward_backward_cache_miss_and_end_of_stream(self):
         cap = ExactVideoCapture(__file__)

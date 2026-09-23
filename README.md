@@ -218,6 +218,8 @@ unchanged file during the session. Initial opening and uncached backward jumps
 can therefore take longer on large videos. Displayed seconds remain nominal
 `frame_index / reported_fps`, not the source's VFR presentation timestamps.
 
+開檔計數與預覽跳幀期間，狀態列會更新「處理中」、已讀取幀數及耗時；跳幀另顯示目標幀與百分比。計數尚未完成時不顯示推測的總幀數。訊息約每 0.2 秒更新，完成後恢復正常影格資訊。此提示改善等待回饋，解碼仍同步執行，等待期間尚不能即時取消或操作其他控制項。
+
 Rerun older analyses after upgrading, re-export event images, and review existing
 manual annotations: their saved frame numbers are preserved and are not shifted
 automatically. Percentage bounds now use the actual decoded frame count.

@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import cv2
 from video_reader import ExactVideoCapture
+from video_progress import show_video_progress
 
 import batch_core as core
 from app import HSVVideoTester
@@ -73,10 +74,10 @@ class VideoEditor(HSVVideoTester):
         try:
             if review and core.source_identity(item["path"]) != self.run["source_identity"]:
                 raise ValueError("來源影片已更動，不能用新影片複核舊結果。請重新指定相同來源或重跑。")
-            meta = core.probe_video(item["path"])
+            meta = core.probe_video(item["path"], progress=self._video_progress)
             self.preview_identity = core.source_identity(item["path"])
             core.validate_settings(self.initial, meta)
-            self.capture = ExactVideoCapture(item["path"])
+            self.capture = ExactVideoCapture(item["path"], progress=self._video_progress)
             self.video_path = Path(item["path"])
             self.frame_count, self.fps = meta["frame_count"], meta["fps"]
             self.timeline.configure(to=self.frame_count - 1)
@@ -814,8 +815,10 @@ class BatchApp:
             return
         paths = filedialog.askopenfilenames(parent=self.root, filetypes=VIDEO_TYPES)
         for path in paths:
-            self.project["items"].append(core.new_item(path))
+            self.project["items"].append(core.new_item(path, progress=lambda *args:
+                show_video_progress(self.root, self.message, *args)))
         if paths:
+            self.message.set(f"影片讀取完成：{len(paths)} 個項目；讀取失敗的影片會標示在清單中。")
             self.changed()
 
     def add_pairing(self):
