@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "test_dates": ["2026-09-18", "2026-09-22"],
+  "batch_id": "sea-trial-batch-01",
+  "projects": ["inputs/analysis_project.json"],
+  "pairings": ["inputs/pairing.json"],
+  "evaluation_csvs": ["inputs/miou_detection_distance_20260918.csv"],
+  "attachment_index": "inputs/miou_results.csv",
+  "attachment_root": "inputs",
+  "image_root": "inputs/labeled",
+  "mask_root": "inputs/miou_report/assets",
+  "video_root": "",
+  "output_dir": "deliveries",
+  "include_videos": false,
+  "pairing_run_id_map": {},
+  "event_links": {},
+  "report": {
+    "pdf_layout": "overview",
+    "report_name": "海試結果報告",
+    "customer_project": "",
+    "version": "1.0",
+    "logo": "",
+    "scope": "",
+    "notes": "",
+    "cover": true,
+    "summary_table": true,
+    "missing_appendix": false,
+    "font_path": ""
+  }
+}

@@ -234,3 +234,29 @@ debug-video case can additionally be checked with
 this checks a sequential baseline, full and partial analysis, navigation, event
 exports, and the actual Tk review/independent viewer paths. It writes a
 `verification.json` report and separate analysis/export artifacts.
+# Sea Trial Result Builder
+
+`delivery_tool` creates a portable, offline sea-trial report from analysis projects, pairing files, evaluation CSV files, labeled images, and aligned GT/Mask attachments. It reads source data without rerunning segmentation, OCR, or IoU calculations.
+
+## Run the desktop app
+
+```powershell
+uv run python -m delivery_tool
+```
+
+In the desktop app, select the input files and roots, choose the PDF layout, then run **檢查配對與問題** before **產生交付包**. Jobs run in a background thread and can be cancelled. Open the produced `index.html` for the offline report and collage viewer.
+
+## Use a shared configuration from the CLI
+
+Copy [delivery_config.example.json](delivery_tool/delivery_config.example.json) and edit its paths. Relative paths resolve from the configuration file's folder. Attachment asset paths resolve from `attachment_root` or `mask_root`, not from the current working directory.
+
+```powershell
+uv run python -m delivery_tool --config .\delivery_config.json --validate-only
+uv run python -m delivery_tool --config .\delivery_config.json --build
+```
+
+The three `report.pdf_layout` choices are `overview`, `run`, and `both`. The Windows default searches for Microsoft JhengHei. Set `report.font_path` when another TrueType or TrueType Collection font is needed. A build stops if it cannot find a usable Chinese font or if validation reports an error. Missing project links, source images, videos, GT, or Mask are kept as warnings when the inputs are otherwise unambiguous.
+
+`pairing_run_id_map` maps a parsed identity key to a pairing run id. Keys may use `date|test|run_letter|phase|camera`, `test|run_letter|phase|camera`, or `date|run_letter|phase|camera`. `event_links` may use the full parsed event key (`date|camera|test|run_letter|phase|event|frame`) or the source filename and set `{"project_item_id": "...", "pairing_run_id": "..."}`. Set a key to `"clear"` to explicitly remove a project association.
+
+Every output is written to a unique `delivery_<timestamp>_<id>` directory. `internal/result_manifest.json` is the shared data source for HTML, PDF, and CSV. Bundled assets are relative to that directory so the package can be moved. Videos are not copied unless **將唯一配對影片複製到交付包** is enabled.
