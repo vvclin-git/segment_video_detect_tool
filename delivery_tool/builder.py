@@ -134,6 +134,54 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, pr
         record["analysis_link"]["project_path"] = Path(record.get("analysis_link", {}).get("project_path", "")).name
         if progress:
             progress(index + 1, len(records), f"整理交付附件：{record.get('filename', '')}")
+    sequence_records = {record.get("analysis_link", {}).get("sequence_id"): record for record in records
+                        if record.get("analysis_link", {}).get("sequence_id")}
+    for sequence in manifest.get("analysis_sequences", []):
+        if cancel and cancel.is_set():
+            raise InterruptedError("已取消")
+        sid = sequence["sequence_id"]
+        rows = result.get("analysis_frames", {}).get(sid)
+        if sequence.get("status") == "available" and rows is not None:
+            compact_rows = [[row.get("frame"), row.get("timestamp"), row.get("raw_detected"), row.get("rolling_rate"),
+                             row.get("stable_detected"), row.get("selected_pixels"), row.get("largest_blob_area"),
+                             row.get("bbox_valid"), row.get("bbox_x"), row.get("bbox_y"), row.get("bbox_width"),
+                             row.get("bbox_height"), row.get("window_ready")] for row in rows]
+            payload = {"sequence_id": sid, "start": sequence.get("analysis_start_frame"),
+                       "end": sequence.get("analysis_end_frame"), "fps": sequence.get("fps"),
+                       "timestamp_basis": sequence.get("timestamp_basis", ""),
+                       "settings": sequence.get("settings", {}), "events": sequence.get("events", []),
+                       "rows": compact_rows}
+            serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            serialized = (serialized.replace("<", "\\u003c").replace(">", "\\u003e")
+                          .replace("&", "\\u0026").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+            relative = Path("analysis") / f"{sid}.js"
+            target = output / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("window.__SEA_TRIAL_FRAME_DATA__=window.__SEA_TRIAL_FRAME_DATA__||{};"
+                              f"window.__SEA_TRIAL_FRAME_DATA__[{json.dumps(sid)}]={serialized};", encoding="utf-8")
+            sequence["data_path"] = relative.as_posix()
+        if config.get("include_videos"):
+            linked_record = sequence_records.get(sid)
+            surrogate = {"key": sid, "camera": sequence.get("camera", ""),
+                         "analysis_link": {"pairing_run_id": sequence.get("pairing_run_id", "")},
+                         "parsed": {"run_id": sequence.get("pairing_run_id", "")}}
+            video = _video_for_record(linked_record or surrogate, pairings, config, errors, warnings)
+            if video:
+                identity = str(video.resolve()).casefold()
+                if identity not in copied_videos:
+                    date = (linked_record or {}).get("date", "")
+                    copied_videos[identity] = _copy_source(video, output, Path("videos"), date)
+                sequence["video"] = copied_videos[identity]
+            else:
+                sequence["video_reason"] = "沒有唯一且可讀取的配對影片；圖表仍可使用。"
+        else:
+            sequence["video_reason"] = "設定未啟用影片打包；圖表仍可使用。"
+        # Machine-specific source paths are retained in the internal validation report only.
+        sequence.pop("_source_path", None)
+        sequence.pop("_source_candidates", None)
+        sequence.pop("source_name", None)
+        if progress:
+            progress(len(records), len(records), f"整理逐幀序列：{sequence.get('camera', '')} · {sid}")
     for item in manifest.get("project_completeness", []):
         item["project_path"] = Path(item.get("project_path", "")).name
     return manifest
@@ -141,6 +189,8 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, pr
 
 def _write_validation(path: Path, result: dict):
     report = {"ok": result["ok"], "record_count": result["record_count"], "counts": result["counts"],
+              "frame_chart_counts": result.get("frame_chart_counts", {}),
+              "frame_chart_sources": result.get("frame_chart_sources", []),
               "errors": result["errors"], "warnings": result["warnings"]}
     _atomic_json(path, report)
 
@@ -163,6 +213,12 @@ def build(config: dict, *, progress=None, cancel: threading.Event | None = None)
         for record in result["manifest"]["records"]:
             record["batch_id"] = config.get("batch_id", "")
         result["manifest"]["generated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        result["frame_chart_sources"] = [
+            {"sequence_id": sequence.get("sequence_id"), "project_id": sequence.get("project_id"),
+             "item_id": sequence.get("item_id"), "run_id": sequence.get("run_id"),
+             "status": sequence.get("status"), "source_path": sequence.get("_source_path", ""),
+             "source_candidates": sequence.get("_source_candidates", [])}
+            for sequence in result["manifest"].get("analysis_sequences", [])]
         manifest = _package_assets(result, delivery, result["pairings"], config, progress, cancel)
         # Optional video pairing can add validation findings after the initial pass.
         manifest["validation"] = {"errors": result["errors"], "warnings": result["warnings"]}
@@ -190,6 +246,7 @@ def build(config: dict, *, progress=None, cancel: threading.Event | None = None)
         return {"delivery_dir": delivery, "index_html": delivery / "index.html", "pdfs": outputs,
                 "csv": delivery / "result_summary.csv", "manifest": delivery / "internal" / "result_manifest.json",
                 "validation": delivery / "internal" / "validation_report.json", "counts": result["counts"],
+                "frame_chart_counts": result.get("frame_chart_counts", {}),
                 "record_count": result["record_count"], "warnings": result["warnings"]}
     except BaseException:
         shutil.rmtree(delivery, ignore_errors=True)

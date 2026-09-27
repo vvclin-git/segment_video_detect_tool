@@ -18,6 +18,8 @@ DEFAULT_CONFIG = {
     "video_root": "",
     "output_dir": "",
     "include_videos": False,
+    "include_frame_charts": True,
+    "project_assets_roots": {},
     "pairing_run_id_map": {},
     "event_links": {},
     "report": {

@@ -12,6 +12,8 @@
   "video_root": "",
   "output_dir": "deliveries",
   "include_videos": false,
+  "include_frame_charts": true,
+  "project_assets_roots": {},
   "pairing_run_id_map": {},
   "event_links": {},
   "report": {

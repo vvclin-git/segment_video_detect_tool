@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>__TITLE__</title>
+  <link rel="stylesheet" href="report.css">
+  <script defer src="chart_math.js"></script>
+  <script defer src="report.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <div><h1>__TITLE__</h1><p>離線海試結果 · 批次：__BATCH__</p></div>
+      <p class="header-note">每日 CSV 的 mIoU 原值照錄，未重新計算。距離採 CSV 檢出距離欄位；OCR 人工覆核狀態未知。</p>
+    </div>
+  </header>
+  <main>
+    <section id="listView">
+      <section class="toolbar">
+        <input id="search" type="search" placeholder="搜尋檔名、航次或批次">
+        <select id="date"><option value="">全部日期</option></select>
+        <select id="camera"><option value="">全部 Camera</option></select>
+        <select id="test"><option value="">全部 Test</option></select>
+        <select id="link"><option value="">全部分析關聯</option><option>linked</option><option>unlinked</option><option>mismatch</option><option>cleared</option></select>
+        <span id="count" class="count"></span>
+      </section>
+      <section class="integrity">
+        <h2>完整性</h2>
+        <p>評估事件：__COUNT__　圖片：__IMAGES__　GT：__GT__　Mask：__MASK__　分析關聯：__LINKED__</p>
+        <p id="chartCounts" class="muted"></p>
+        <details><summary>Project 完整性清單（包含未評估／失敗項目）</summary><ul id="projectList"></ul></details>
+        <details><summary>缺漏與品質檢查</summary><ul id="warningList"></ul></details>
+      </section>
+      <section id="cards" class="cards"></section>
+    </section>
+
+    <section id="detailView" class="detail-view" hidden>
+      <div class="detail-heading">
+        <button id="backToList" class="secondary">返回事件列表</button>
+        <div><p class="eyebrow">航次明細</p><h2 id="tripTitle"></h2><p id="tripMeta" class="muted"></p></div>
+      </div>
+      <div id="cameraSummaries" class="camera-summaries"></div>
+      <section class="frame-section">
+        <div class="frame-heading"><div><p class="eyebrow">逐幀分析</p><h2>逐幀分析圖表</h2></div>
+          <label class="camera-choice">相機選擇 <select id="detailCamera"></select></label>
+        </div>
+        <div id="cameraReview" class="camera-review"></div>
+      </section>
+    </section>
+  </main>
+
+  <div id="modal" class="modal" aria-hidden="true"><button id="closeModal">關閉</button><img id="large" alt="Collage 放大"></div>
+  <script id="manifestData" type="application/json">__DATA__</script>
+</body>
+</html>

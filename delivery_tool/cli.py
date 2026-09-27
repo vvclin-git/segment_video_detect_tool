@@ -28,7 +28,8 @@ def main(argv=None) -> int:
         if args.validate_only:
             result = validate_config(config)
             payload = {"ok": result["ok"], "record_count": result["record_count"],
-                       "counts": result["counts"], "errors": result["errors"], "warnings": result["warnings"]}
+                       "counts": result["counts"], "frame_chart_counts": result.get("frame_chart_counts", {}),
+                       "errors": result["errors"], "warnings": result["warnings"]}
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 0 if result["ok"] else 2
         if args.build:
@@ -38,6 +39,7 @@ def main(argv=None) -> int:
                               "pdfs": [str(p) for p in result["pdfs"]],
                               "csv": str(result["csv"]), "manifest": str(result["manifest"]),
                               "validation": str(result["validation"]), "counts": result["counts"],
+                              "frame_chart_counts": result.get("frame_chart_counts", {}),
                               "record_count": result["record_count"], "warnings": result["warnings"]}, ensure_ascii=False, indent=2))
             return 0
         from .gui import launch

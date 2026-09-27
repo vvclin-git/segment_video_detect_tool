@@ -9,6 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from .config import resolve_list, resolve_path
+from .frame_analysis import build_analysis_sequence, sequence_id
 from .parsing import canonical_event, history_run_mapping, normalize_date, normalize_row, parse_filename
 
 
@@ -47,7 +48,8 @@ def _project_files(config: dict, errors: list, warnings: list) -> tuple[list[dic
             errors.append({"code": "invalid_project", "message": f"專案讀取失敗：{project_path}：{exc}"})
             continue
         for item in project.get("items", []):
-            items.append({"item": item, "project_path": str(project_path), "project_name": project.get("name", "")})
+            items.append({"item": item, "project_path": str(project_path), "project_name": project.get("name", ""),
+                          "project_id": str(project.get("project_id", ""))})
     for pairing_path in resolve_list(config, "pairings"):
         if not pairing_path.is_file():
             errors.append({"code": "missing_pairing", "message": f"找不到 pairing 檔：{pairing_path}"})
@@ -337,7 +339,8 @@ def _project_events(item: dict) -> list[dict]:
     events = []
     latest = item.get("latest_run") or {}
     summary = latest.get("summary") or {}
-    auto_map = {"FirstDetection": "first_detection_frame", "StableStart": "first_sustained_stable_start_frame"}
+    auto_map = {"FirstDetection": "first_detection_frame", "StableStart": "first_sustained_stable_start_frame",
+                "StableConfirmation": "first_stable_confirmation_frame"}
     for name, field in auto_map.items():
         frame = summary.get(field)
         if frame is not None:
@@ -347,7 +350,8 @@ def _project_events(item: dict) -> list[dict]:
         manual = batch_core.resolved_manual_events(item)
     except Exception:
         manual = item.get("manual_events", {})
-    manual_map = {"manual_first_detection": "FirstDetection", "manual_sustained_stable_start": "StableStart"}
+    manual_map = {"manual_first_detection": "FirstDetection", "manual_sustained_stable_start": "StableStart",
+                  "manual_stable_confirmation": "StableConfirmation"}
     for key, name in manual_map.items():
         if manual.get(key, {}).get("frame") is not None:
             events.append({"event": name, "frame": int(manual[key]["frame"]), "source": "manual"})
@@ -477,7 +481,9 @@ def _link_project(record: dict, project_rows: list, pairing_rows: list, config: 
     if not matches:
         errors.append({"code": "project_event_mismatch", "key": record["key"], "message": f"分析項目 {item.get('id')} 沒有相同事件種類與 Frame"})
         return {"status": "mismatch", "item_id": str(item.get("id", "")), "pairing_run_id": run_id,
-                "project_path": row["project_path"], "event_sources": []}
+                "project_path": row["project_path"], "project_id": row.get("project_id", ""), "event_sources": [],
+                "sequence_id": sequence_id(str(row.get("project_id", "")), str(item.get("id", "")),
+                                            str((item.get("latest_run") or {}).get("run_id", "")))}
     sources = sorted({e["source"] for e in matches})
     latest = item.get("latest_run") or {}
     metadata = latest.get("metadata") or item.get("metadata") or {}
@@ -485,6 +491,9 @@ def _link_project(record: dict, project_rows: list, pairing_rows: list, config: 
     if frame_count and parsed.get("frame") and parsed["frame"] > int(frame_count):
         errors.append({"code": "frame_outside_video", "key": record["key"], "message": f"Frame {parsed['frame']} 超過分析影片總幀數 {frame_count}"})
     return {"status": "linked", "item_id": str(item.get("id", "")), "pairing_run_id": run_id,
+            "project_id": row.get("project_id", ""),
+            "sequence_id": sequence_id(str(row.get("project_id", "")), str(item.get("id", "")),
+                                        str((item.get("latest_run") or {}).get("run_id", ""))),
             "project_path": row["project_path"], "event_sources": sources,
             "fps": fps, "frame_count": frame_count}
 
@@ -576,7 +585,8 @@ def validate_config(config: dict, *, progress=None, cancel=None) -> dict:
             fps = None
         if fps is None:
             fps = link.get("fps")
-        video = _video_metadata(record, pairing_rows, config, errors, warnings)
+        video_record = dict(record, analysis_link=link)
+        video = _video_metadata(video_record, pairing_rows, config, errors, warnings)
         if fps is None:
             fps = video.get("fps")
         if video.get("status") == "source_unverified" and not any(w.get("code") == "video_source_unverified" for w in warnings):
@@ -609,10 +619,29 @@ def validate_config(config: dict, *, progress=None, cancel=None) -> dict:
     # Preserve unassessed and failed analysis items for an explicit completeness appendix.
     evaluation_item_ids = {r["analysis_link"].get("item_id") for r in enriched if r["analysis_link"].get("item_id")}
     completeness = []
+    sequences_by_id = {}
+    sequence_rows = {}
+    for row in project_rows:
+        sequence, frame_rows = build_analysis_sequence(row, config)
+        sid = sequence["sequence_id"]
+        # Duplicate project/item/run identities refer to the same immutable analysis.
+        if sid not in sequences_by_id:
+            sequences_by_id[sid] = sequence
+            if frame_rows is not None:
+                sequence_rows[sid] = frame_rows
+        if sequence["status"] in {"missing", "invalid"}:
+            warnings.append({"code": f"{sequence['status']}_frame_data", "key": sid,
+                             "message": f"{sequence.get('camera')} · {sequence.get('scenario_id')} · {sequence.get('phase')}：{sequence['reason']}"})
     for row in project_rows:
         item = row["item"]
         latest = item.get("latest_run") or {}
+        sid = sequence_id(row.get("project_id", ""), item.get("id", ""), latest.get("run_id", ""))
+        sequence = sequences_by_id[sid]
         completeness.append({"item_id": str(item.get("id", "")), "project_path": row["project_path"],
+                             "project_id": row.get("project_id", ""), "sequence_id": sid,
+                             "analysis_run_id": str(latest.get("run_id", "")),
+                             "frame_data_status": sequence.get("status", "missing"),
+                             "frame_data_reason": sequence.get("reason", ""),
                              "camera": item.get("camera", ""), "pairing_run_id": item.get("pairing_run_id", item.get("segment", "")),
                              "scenario_id": item.get("scenario_id", ""), "phase": item.get("phase", ""),
                              "status": item.get("status", "pending"),
@@ -633,12 +662,16 @@ def validate_config(config: dict, *, progress=None, cancel=None) -> dict:
     manifest = {"schema_version": 1, "batch_id": config.get("batch_id", ""),
                 "test_dates": config.get("test_dates", []), "records": enriched,
                 "project_completeness": completeness,
+                "analysis_sequences": list(sequences_by_id.values()),
                 "metric_note": "每日 CSV 的 mIoU 原值照錄；既有整理程式來源為 target_iou，未重新計算，非跨類別平均。",
                 "distance_note": "距離採每日 CSV 檢出距離_m；檔名距離僅核對。距離來源為 OCR，人工覆核狀態未知。",
                 "frame_note": "Frame 為 1-based；名目時間以 (frame - 1) / fps 計算。",
                 "validation": {"errors": errors, "warnings": warnings}}
     return {"manifest": manifest, "errors": errors, "warnings": warnings,
             "project_items": project_rows, "pairings": pairing_rows,
+            "analysis_frames": sequence_rows,
+            "frame_chart_counts": {status: sum(row.get("status") == status for row in sequences_by_id.values())
+                                   for status in ("available", "missing", "invalid", "disabled")},
             "ok": not errors, "record_count": len(enriched),
             "counts": {"images_found": sum(bool(r["image_path"]) for r in enriched),
                        "gt_valid": sum(r["attachment"]["gt_status"] == "valid" for r in enriched),

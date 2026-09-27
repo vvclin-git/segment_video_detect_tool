@@ -260,3 +260,33 @@ The three `report.pdf_layout` choices are `overview`, `run`, and `both`. The Win
 `pairing_run_id_map` maps a parsed identity key to a pairing run id. Keys may use `date|test|run_letter|phase|camera`, `test|run_letter|phase|camera`, or `date|run_letter|phase|camera`. `event_links` may use the full parsed event key (`date|camera|test|run_letter|phase|event|frame`) or the source filename and set `{"project_item_id": "...", "pairing_run_id": "..."}`. Set a key to `"clear"` to explicitly remove a project association.
 
 Every output is written to a unique `delivery_<timestamp>_<id>` directory. `internal/result_manifest.json` is the shared data source for HTML, PDF, and CSV. Bundled assets are relative to that directory so the package can be moved. Videos are not copied unless **將唯一配對影片複製到交付包** is enabled.
+
+## HTML 航次明細與逐幀圖表
+
+HTML 事件卡片的 **查看航次分析** 會開啟航次明細；Project 完整性清單也能開啟尚未評估的分析項目。明細依相機顯示 First／Stable Collage 與評估指標，一次查看一台相機的 Raw、Rolling、Stable 曲線。Frame 範圍可完整查看、手動指定或依事件前後秒數定位，也可用滾輪縮放、拖曳平移、單擊固定 Frame。逐幀資料以游標直接查原值；畫面降採樣只影響繪圖，短脈衝仍會保留。
+
+設定新增 `include_frame_charts`（預設為 `true`）和 `project_assets_roots`。後者以 Project JSON 的 `project_id` 為鍵，指向該專案的 `.assets` 根目錄。例如：
+
+```json
+{
+  "include_frame_charts": true,
+  "project_assets_roots": {
+    "f6ef21ba3b4947cfb0816c90d19121d6": "C:/data/analysis_project.assets"
+  }
+}
+```
+
+逐幀來源依序使用指定 `.assets/runs/<run_id>/frames.json`、Project 旁的 `<project-name>.assets/runs/<run_id>/frames.json`、以及 `latest_run.directory/frames.json`。只讀取 `latest_run.run_id`；第一個存在的檔案若損壞會標為無效，不會退回其他版本。CLI 的 `--validate-only` 會輸出逐幀可用、缺漏、無效與已關閉數量。GUI 可為每個 Project ID 設定 `.assets` 根目錄，並可關閉 HTML 圖表。
+
+交付包把報告前端放在本機 `report.js`、`report.css` 和 `chart_math.js`，逐幀序列按需放在 `analysis/<sequence-id>.js`。沒有網路依賴，直接以 Edge 或 Chrome 開啟 `index.html`（`file://`）可使用；搬動整個交付資料夾後，內部連結仍有效。影片定位使用 `(frame - 1) / fps` 名目秒數，對 VFR 或瀏覽器解碼不保證逐幀精準。沒有有效 FPS 時可照常使用 Frame 圖表，但秒數範圍與影片定位停用。相機影片各自播放，不同步 Frame 或時間基準。
+
+新增的獨立 2026-09-22 真實資料驗證設定為 [delivery_config.20260922.validation.json](delivery_config.20260922.validation.json)，不會覆寫 `delivery_config.local.json`。執行：
+
+```powershell
+uv run python -m delivery_tool --config .\delivery_config.20260922.validation.json --validate-only
+uv run python -m delivery_tool --config .\delivery_config.20260922.validation.json --build
+```
+
+該設定使用 `run_data/analysis_project_60.assets` 的 latest-run 序列、`seg_files/miou_detection_distance_20260922.csv` 的評估資料與 `run_data/60度` 的配對影片。`run_data` 內的海試 logger CSV 不作為影片時序來源。Camera 2 沒有此 Project 的對應逐幀資料時，明細會保留缺漏狀態，不會沿用 Camera 1 的 Frame 或影片。
+
+此資料集的 28 組逐幀載入、逐列比對、影片來源雜湊與事件 Frame 解碼記錄見 [2026-09-22 驗收記錄](docs/frame_charts_20260922_acceptance.md)。

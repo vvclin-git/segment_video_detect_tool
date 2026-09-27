@@ -31,6 +31,7 @@ class DeliveryApp:
         self.last_result = None
         self.validation_result = None
         self.event_records = {}
+        self.project_assets_roots = {}
         self.config_file = StringVar(value=config_path or "")
         self.status = StringVar(value="選擇或建立設定檔，載入輸入資料後執行檢查。")
         self.progress_text = StringVar(value="")
@@ -69,6 +70,16 @@ class DeliveryApp:
         ]
         for key, label, kind in files:
             self._path_row(form, key, label, kind)
+        assets = ttk.LabelFrame(form, text="逐幀圖表：各 Project ID 的 .assets 根目錄", padding=6)
+        assets.pack(fill=X, pady=4)
+        self.asset_tree = ttk.Treeview(assets, columns=("project_id", "project", "root"), show="headings", height=4)
+        for column, title, width in (("project_id", "Project ID", 250), ("project", "專案", 210), ("root", ".assets 根目錄（空白時依序自動尋找）", 470)):
+            self.asset_tree.heading(column, text=title); self.asset_tree.column(column, width=width, anchor="w")
+        self.asset_tree.pack(fill=X, expand=True)
+        self.values["projects"].trace_add("write", lambda *_: self._refresh_project_assets_rows())
+        asset_actions = ttk.Frame(assets); asset_actions.pack(fill=X, pady=(5, 0))
+        ttk.Button(asset_actions, text="設定所選 Project 根目錄…", command=self._choose_project_assets_root).pack(side=LEFT)
+        ttk.Button(asset_actions, text="清除所選根目錄", command=self._clear_project_assets_root).pack(side=LEFT, padx=7)
         self._entry_row(form, "test_dates", "測試日期（逗號分隔，如 2026-09-18）")
         self._entry_row(form, "batch_id", "批次識別")
         ttk.Separator(form).pack(fill=X, pady=9)
@@ -86,6 +97,8 @@ class DeliveryApp:
         self._path_row(report, "font_path", "中文字型路徑（選用）", "file", report=True)
         self.values["include_videos"] = BooleanVar(value=False)
         ttk.Checkbutton(report, text="將唯一配對影片複製到交付包", variable=self.values["include_videos"]).pack(anchor=W)
+        self.values["include_frame_charts"] = BooleanVar(value=True)
+        ttk.Checkbutton(report, text="在 HTML 加入逐幀分析圖表", variable=self.values["include_frame_charts"]).pack(anchor=W)
         self.values["cover"] = BooleanVar(value=True); self.values["summary_table"] = BooleanVar(value=True)
         self.values["missing_appendix"] = BooleanVar(value=False)
         checks = ttk.Frame(report); checks.pack(fill=X, pady=4)
@@ -141,11 +154,59 @@ class DeliveryApp:
             chosen = filedialog.askopenfilenames(title="選擇檔案", filetypes=(("資料檔", "*.json *.csv"), ("所有檔案", "*.*")))
             if chosen:
                 variable.set(";".join(chosen))
+                if key == "projects":
+                    self._refresh_project_assets_rows()
             return
         else:
             chosen = filedialog.askopenfilename(title="選擇檔案", filetypes=(("CSV／字型／圖片", "*.csv *.ttf *.ttc *.png *.jpg"), ("所有檔案", "*.*")))
         if chosen:
             variable.set(chosen)
+            if key == "projects":
+                self._refresh_project_assets_rows()
+
+    def _project_paths_from_form(self):
+        values = [value.strip() for value in self.values["projects"].get().split(";") if value.strip()]
+        base = Path(self.config_file.get()).resolve().parent if self.config_file.get().strip() else Path.cwd()
+        for value in values:
+            path = Path(value).expanduser()
+            yield path if path.is_absolute() else (base / path).resolve()
+
+    def _refresh_project_assets_rows(self):
+        for item in self.asset_tree.get_children():
+            self.asset_tree.delete(item)
+        seen = set()
+        for path in self._project_paths_from_form():
+            try:
+                project = json.loads(path.read_text(encoding="utf-8-sig"))
+                project_id = str(project.get("project_id", ""))
+                if not project_id or project_id in seen:
+                    continue
+                seen.add(project_id)
+                self.asset_tree.insert("", END, iid=f"project_{len(seen)}", values=(project_id, project.get("name", path.stem),
+                                     self.project_assets_roots.get(project_id, "")))
+            except Exception:
+                continue
+
+    def _choose_project_assets_root(self):
+        selection = self.asset_tree.selection()
+        if not selection:
+            messagebox.showinfo("選擇 Project", "請先在清單選取一個分析專案。")
+            return
+        values = self.asset_tree.item(selection[0], "values")
+        chosen = filedialog.askdirectory(title=f"選擇 {values[1]} 的 .assets 根目錄")
+        if chosen:
+            self.project_assets_roots[str(values[0])] = chosen
+            self._refresh_project_assets_rows()
+            self.asset_tree.selection_set(selection[0])
+
+    def _clear_project_assets_root(self):
+        selection = self.asset_tree.selection()
+        if not selection:
+            messagebox.showinfo("選擇 Project", "請先在清單選取一個分析專案。")
+            return
+        project_id = str(self.asset_tree.item(selection[0], "values")[0])
+        self.project_assets_roots.pop(project_id, None)
+        self._refresh_project_assets_rows()
 
     def _choose_config(self):
         chosen = filedialog.askopenfilename(title="載入設定檔", filetypes=(("JSON", "*.json"),))
@@ -158,6 +219,8 @@ class DeliveryApp:
             self.config_file.set(str(Path(path).resolve()))
             for key in ("projects", "pairings", "evaluation_csvs"):
                 self.values[key].set(";".join(str(v) for v in config.get(key, [])))
+            self.project_assets_roots = {str(key): str(value) for key, value in (config.get("project_assets_roots") or {}).items()}
+            self._refresh_project_assets_rows()
             for key in ("attachment_index", "image_root", "mask_root", "attachment_root", "video_root", "output_dir"):
                 self.values[key].set(str(config.get(key) or ""))
             self.values["test_dates"].set(",".join(config.get("test_dates", [])))
@@ -169,6 +232,7 @@ class DeliveryApp:
                 self.values[key].set(bool(report.get(key, DEFAULT_CONFIG["report"][key])))
             self.values["notes"].delete("1.0", END); self.values["notes"].insert("1.0", report.get("notes", ""))
             self.values["include_videos"].set(bool(config.get("include_videos", False)))
+            self.values["include_frame_charts"].set(bool(config.get("include_frame_charts", True)))
             self.status.set("設定已載入。")
         except Exception as exc:
             messagebox.showerror("載入失敗", str(exc))
@@ -185,6 +249,8 @@ class DeliveryApp:
         config["test_dates"] = [x.strip() for x in self.values["test_dates"].get().split(",") if x.strip()]
         config["batch_id"] = self.values["batch_id"].get().strip()
         config["include_videos"] = bool(self.values["include_videos"].get())
+        config["include_frame_charts"] = bool(self.values["include_frame_charts"].get())
+        config["project_assets_roots"] = dict(self.project_assets_roots)
         config["report"].update({key: self.values[key].get().strip() for key in
                                  ("pdf_layout", "report_name", "customer_project", "version", "scope", "logo", "font_path")})
         config["report"].update({key: bool(self.values[key].get()) for key in ("cover", "summary_table", "missing_appendix")})
