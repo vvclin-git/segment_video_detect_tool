@@ -83,12 +83,43 @@ class DeliveryFixture(unittest.TestCase):
         result = validate_config(self.config)
         record = result["manifest"]["records"][0]
         output = self.root / "collage.png"
-        render_collage(record, output)
+        overlay = self.root / "overlay.png"
+        render_collage(record, output, overlay_output=overlay)
+        with Image.open(overlay) as image:
+            self.assertEqual(image.size, (960, 768))
+            self.assertEqual(image.getpixel((700, 700)), tuple(self.base[700, 700]))
         collage = np.asarray(Image.open(output).convert("RGB"))
         h, w = 768, 960
         self.assertTrue(np.array_equal(collage[48:48 + h, :w], self.base))
-        self.assertTrue(np.array_equal(collage[48 + 700, w + 28 + 700], self.base[700, 700]))
-        self.assertTrue(np.allclose(collage[48 + 140, w + 28 + 140], (60, 144, 162), atol=1))
+        self.assertTrue(np.array_equal(collage[48 + 700, 2 * (w + 28) + 700], self.base[700, 700]))
+        self.assertTrue(np.allclose(collage[48 + 140, 2 * (w + 28) + 140], (60, 144, 162), atol=1))
+
+    def test_seg_panel_and_dimension_validation(self):
+        seg_dir = self.images.parent / "Seg"
+        seg_dir.mkdir()
+        seg = seg_dir / self.filename
+        Image.new("RGB", (960, 768), (12, 34, 56)).save(seg)
+        result = validate_config(self.config)
+        self.assertTrue(result["ok"])
+        record = result["manifest"]["records"][0]
+        self.assertEqual(record["attachment"]["seg_status"], "valid")
+        output = self.root / "triple.png"
+        render_collage(record, output)
+        with Image.open(output) as image:
+            self.assertEqual(image.size, (2936, 860))
+            self.assertEqual(image.getpixel((988 + 400, 48 + 400)), (12, 34, 56))
+        Image.new("RGB", (100, 100)).save(seg)
+        result = validate_config(self.config)
+        self.assertTrue(any(e["code"] == "invalid_seg_image" for e in result["errors"]))
+
+    def test_pdf_combines_unlinked_camera_with_unique_voyage(self):
+        from delivery_tool.pdf_report import _run_rows
+        common = dict(batch_id="b", date="2026-09-22", test="1", run_letter="A", phase="P1")
+        rows = [dict(common, camera="Camera 1", analysis_link={"pairing_run_id": "run1"}),
+                dict(common, camera="Camera 2", analysis_link={})]
+        self.assertEqual(len(_run_rows(rows)), 1)
+        rows.append(dict(common, camera="Camera 1", analysis_link={"pairing_run_id": "run2"}))
+        self.assertEqual(len(_run_rows(rows)), 3)
 
     def test_wrong_mask_dimensions_are_a_blocking_error(self):
         Image.new("L", (320, 240), 255).save(self.mask_root / "mask.png")
@@ -183,6 +214,8 @@ class DeliveryFixture(unittest.TestCase):
         record = manifest["records"][0]
         self.assertFalse(Path(record["image_path"]).is_absolute())
         self.assertFalse(Path(record["collage"]).is_absolute())
+        self.assertFalse(Path(record["overlay_image"]).is_absolute())
+        self.assertTrue((result["delivery_dir"] / record["overlay_image"]).is_file())
         self.assertEqual(record["iou"], 0.75)
 
 

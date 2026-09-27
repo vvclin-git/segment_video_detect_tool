@@ -97,12 +97,14 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, pr
         collage_key = "_".join(_safe_name(str(record.get(k, ""))) for k in
                                ("date", "test", "run_letter", "phase", "camera", "event", "frame"))
         collage_path = output / "collages" / (record.get("date") or "unknown_date") / f"{collage_key}.png"
-        generated = render_collage(record, collage_path)
+        overlay_path = output / "overlays" / (record.get("date") or "unknown_date") / f"{collage_key}.png"
+        generated = render_collage(record, collage_path, overlay_output=overlay_path)
+        record["overlay_image"] = overlay_path.relative_to(output).as_posix() if overlay_path.is_file() else ""
         record["collage"] = generated.relative_to(output).as_posix() if generated else ""
 
         # Copy source annotation and aligned mask into the delivery so manifest links remain portable.
         attachment = record.get("attachment", {})
-        for field, subdir in (("labelme_path", "labelme"), ("mask_path", "masks")):
+        for field, subdir in (("labelme_path", "labelme"), ("mask_path", "masks"), ("seg_path", "seg")):
             source_text = attachment.get(field, "")
             if source_text and Path(source_text).is_file():
                 attachment[field] = _copy_source(Path(source_text), output, Path("internal/attachments") / subdir,

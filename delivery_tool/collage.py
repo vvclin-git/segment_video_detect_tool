@@ -44,7 +44,7 @@ def _overlay(base: Image.Image, gt_path: Path | None, mask_path: Path | None) ->
     return result
 
 
-def render_collage(record: dict, output: Path) -> Path | None:
+def render_collage(record: dict, output: Path, *, overlay_output: Path | None = None) -> Path | None:
     """Write the exact-range, side-by-side event collage. Source files are never changed."""
     if not record.get("image_path"):
         return None
@@ -57,21 +57,34 @@ def render_collage(record: dict, output: Path) -> Path | None:
     complete = attachment.get("gt_status") == "valid" and attachment.get("mask_status") == "valid"
     # The right panel is deliberately a placeholder unless both aligned sources are valid.
     right = _overlay(base, gt, mask) if complete and gt and mask else None
+    if right is not None and overlay_output is not None:
+        overlay_output.parent.mkdir(parents=True, exist_ok=True)
+        right.save(overlay_output, format="PNG")
     title_height, footer_height, gutter = 48, 44, 28
-    canvas = Image.new("RGB", (base.width * 2 + gutter, base.height + title_height + footer_height), "white")
+    canvas = Image.new("RGB", (base.width * 3 + gutter * 2, base.height + title_height + footer_height), "white")
     draw = ImageDraw.Draw(canvas)
     title_font = _font(max(16, round(base.width / 45)))
     small_font = _font(max(12, round(base.width / 72)))
     draw.text((base.width // 2, 9), "原始影像", fill=(32, 48, 60), font=title_font, anchor="mt")
-    draw.text((base.width + gutter + base.width // 2, 9), "人工標註＋Mask", fill=(32, 48, 60), font=title_font, anchor="mt")
+    draw.text((2 * (base.width + gutter) + base.width // 2, 9), "人工標註＋Mask", fill=(32, 48, 60), font=title_font, anchor="mt")
     canvas.paste(base, (0, title_height))
+    middle_x = base.width + gutter
+    draw.text((middle_x + base.width // 2, 9), "分割影像", fill=(32, 48, 60), font=title_font, anchor="mt")
+    if attachment.get("seg_status") == "valid" and attachment.get("seg_path"):
+        with Image.open(attachment["seg_path"]) as segmented:
+            if segmented.size != base.size:
+                raise ValueError("分割影像與原圖尺寸不一致")
+            canvas.paste(segmented.convert("RGB"), (middle_x, title_height))
+    else:
+        draw.text((middle_x + base.width // 2, title_height + base.height // 2),
+                  "未提供分割影像", fill=(140, 48, 48), font=title_font, anchor="mm")
     if right:
-        canvas.paste(right, (base.width + gutter, title_height))
+        canvas.paste(right, (2 * (base.width + gutter), title_height))
         y = title_height + base.height + 12
         draw.line((22, y + 8, 56, y + 8), fill=RED, width=max(2, round(3 * base.width / 960)))
         draw.text((64, y), "紅線：人工標註", fill=(32, 48, 60), font=small_font)
-        draw.rounded_rectangle((base.width + gutter + 225, y + 1, base.width + gutter + 255, y + 17), radius=4, fill=CYAN)
-        draw.text((base.width + gutter + 264, y), "青色：預測 Mask（40%）", fill=(32, 48, 60), font=small_font)
+        draw.rounded_rectangle((2 * (base.width + gutter) + 225, y + 1, 2 * (base.width + gutter) + 255, y + 17), radius=4, fill=CYAN)
+        draw.text((2 * (base.width + gutter) + 264, y), "青色：預測遮罩", fill=(32, 48, 60), font=small_font)
     else:
         messages = []
         if attachment.get("gt_status") != "valid":
@@ -79,7 +92,7 @@ def render_collage(record: dict, output: Path) -> Path | None:
         if attachment.get("mask_status") != "valid":
             messages.append("缺少有效對齊預測 Mask")
         text = "\n".join(messages) or "疊圖附件未提供"
-        draw.multiline_text((base.width + gutter + base.width // 2, title_height + base.height // 2),
+        draw.multiline_text((2 * (base.width + gutter) + base.width // 2, title_height + base.height // 2),
                             text, fill=(140, 48, 48), font=title_font, anchor="mm", align="center", spacing=8)
     output.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output, format="PNG", optimize=True)

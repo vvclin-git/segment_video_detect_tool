@@ -74,17 +74,39 @@
     const names = {FirstDetection:'FirstDetection', StableStart:'StableStart', StableConfirmation:'StableConfirmation'};
     return names[row.event] || shown(row.event);
   }
+  function imagePanels(row) {
+    const group = document.createElement('div'); group.className = 'image-panels';
+    const panels = [
+      ['原始影像', row.image_copy || row.image_path],
+      ['分割影像', row.attachment?.seg_status === 'valid' ? row.attachment.seg_path : ''],
+      ['人工標註＋Mask', row.overlay_image]
+    ];
+    panels.forEach(([label, path]) => {
+      const panel = document.createElement('div'); panel.className = 'image-panel';
+      const title = document.createElement('div'); title.className = 'image-panel-title'; title.textContent = label; panel.append(title);
+      if (path) {
+        const link = document.createElement('a'); link.href = path; link.target = '_blank'; link.rel = 'noopener';
+        link.title = `${label}：另開原始解析度圖片`; link.setAttribute('aria-label', link.title);
+        const image = document.createElement('img'); image.src = path; image.alt = `${row.camera} ${eventTitle(row)} ${label}`; image.loading = 'lazy';
+        link.append(image); panel.append(link);
+      } else {
+        const missing = document.createElement('div'); missing.className = 'missing-image'; missing.textContent = `未提供${label}`; panel.append(missing);
+      }
+      group.append(panel);
+    });
+    return group;
+  }
   function makeRecordCard(row) {
     const sequenceId = row.analysis_link?.sequence_id;
     const article = document.createElement('article'); article.className = 'card';
-    const image = row.collage ? `<img class="collage" loading="lazy" src="${esc(row.collage)}" data-full="${esc(row.collage)}" alt="${esc(row.camera)} ${esc(row.event)} Collage">`
-      : '<div class="warning">原始圖片缺漏，無法產生 Collage</div>';
+    const image = '<div class="event-image-host"></div>';
     const movie = row.video ? '<div class="muted">影片已打包；航次明細提供相機共用播放器。</div>' : '<div class="muted">此事件沒有打包影片。</div>';
     article.innerHTML = `<h2>${esc(row.date)} · Test ${esc(row.test)} · ${esc(row.run_letter)}／${esc(row.phase)} · ${esc(row.camera)} · ${esc(eventTitle(row))}</h2>
       <div class="identity">${esc(row.filename)} · Frame ${esc(shown(row.frame))} · ${esc(row.nominal_time_s == null ? '—' : Number(row.nominal_time_s).toFixed(3) + ' 秒')}</div>
       <div class="card-grid"><div>${image}</div><div><div class="metrics"><b>mIoU：${esc(formatIou(row.iou))}</b><b>距離：${esc(row.distance_m == null ? '—' : row.distance_m + ' m')}</b><b>關聯：${esc(row.analysis_link?.status || 'unlinked')}</b></div>
       <div class="badges"><span class="badge">GT ${esc(row.attachment?.gt_status || 'missing')}</span><span class="badge">Mask ${esc(row.attachment?.mask_status || 'missing')}</span></div>
       <p>${movie}</p><div class="links"></div></div></div>`;
+    article.querySelector('.event-image-host').append(imagePanels(row));
     if (sequenceId && sequenceById.has(sequenceId)) article.querySelector('.metrics').append(eventButton(sequenceId, '查看航次分析', row));
     else if (row.analysis_link?.status !== 'linked') {
       const note = document.createElement('div'); note.className = 'warning'; note.textContent = `沒有可開啟的分析項目：${row.analysis_link?.status || 'unlinked'}`; article.append(note);
@@ -123,18 +145,19 @@
     const first = rows.find(row => row.event === 'FirstDetection');
     const stable = rows.find(row => row.event === 'StableStart');
     const figures = document.createElement('div'); figures.className = 'event-collages';
-    [[first,'First Collage'],[stable,'Stable Collage']].forEach(([row,label]) => {
+    [[first,'FirstDetection'],[stable,'StableStart']].forEach(([row,label]) => {
       const figure = document.createElement('figure'); const caption = document.createElement('figcaption'); caption.textContent = label; figure.append(caption);
-      if (row?.collage) { const img = document.createElement('img'); img.src = row.collage; img.alt = `${cameraName} ${label}`; img.addEventListener('click', () => openImage(row.collage)); figure.append(img); }
-      else { const placeholder = document.createElement('div'); placeholder.className = 'missing-image'; placeholder.textContent = row ? 'Collage 缺漏' : '沒有評估事件'; figure.append(placeholder); }
+      if (row) figure.append(imagePanels(row));
+      else { const placeholder = document.createElement('div'); placeholder.className = 'missing-image'; placeholder.textContent = '沒有評估事件'; figure.append(placeholder); }
+      if (row) {
+        const metric = document.createElement('div'); metric.className = 'camera-metrics';
+        metric.textContent = `Frame ${shown(row.frame)} · mIoU ${formatIou(row.iou)} · 距離 ${row.distance_m == null ? '—' : row.distance_m + ' m'}`;
+        figure.append(metric);
+      }
       figures.append(figure);
     });
     article.append(figures);
     const metrics = document.createElement('div'); metrics.className = 'camera-metrics';
-    rows.forEach(row => {
-      const line = document.createElement('div');
-      line.textContent = `${eventTitle(row)} F${shown(row.frame)} · mIoU ${formatIou(row.iou)} · 距離 ${row.distance_m == null ? '—' : row.distance_m + ' m'}`; metrics.append(line);
-    });
     if (!rows.length) { const line = document.createElement('div'); line.className = 'muted'; line.textContent = '本相機沒有評估事件；若有逐幀資料仍可在下方查看。'; metrics.append(line); }
     article.append(metrics); return article;
   }
@@ -285,7 +308,7 @@
     const full = document.createElement('button'); full.textContent = '完整區段'; full.className = 'active'; controls.append(full);
     const rangeLabel = document.createElement('strong'); rangeLabel.textContent = '指定 Frame 範圍'; controls.append(rangeLabel);
     const range = document.createElement('div'); range.className = 'range-fields'; range.innerHTML = `<input class="range-start" type="number" aria-label="Frame 範圍起點"><span>至</span><input class="range-end" type="number" aria-label="Frame 範圍終點"><button class="apply-range">套用</button>`; controls.append(range);
-    const around = document.createElement('button'); around.textContent = '事件前後'; controls.append(around);
+    const around = document.createElement('button'); around.textContent = '移至事件'; controls.append(around);
     const eventSelect = document.createElement('select'); eventSelect.setAttribute('aria-label','選擇事件');
     sequence.events.forEach((event,index) => { const option = document.createElement('option'); option.value = String(index); option.textContent = `${eventTitle(event)} · ${event.source === 'manual' ? '人工' : '自動'} F${event.frame}`; eventSelect.append(option); });
     controls.append(eventSelect);

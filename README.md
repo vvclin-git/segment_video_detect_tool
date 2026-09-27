@@ -290,3 +290,9 @@ uv run python -m delivery_tool --config .\delivery_config.20260922.validation.js
 該設定使用 `run_data/analysis_project_60.assets` 的 latest-run 序列、`seg_files/miou_detection_distance_20260922.csv` 的評估資料與 `run_data/60度` 的配對影片。`run_data` 內的海試 logger CSV 不作為影片時序來源。Camera 2 沒有此 Project 的對應逐幀資料時，明細會保留缺漏狀態，不會沿用 Camera 1 的 Frame 或影片。
 
 此資料集的 28 組逐幀載入、逐列比對、影片來源雜湊與事件 Frame 解碼記錄見 [2026-09-22 驗收記錄](docs/frame_charts_20260922_acceptance.md)。
+
+### Three-panel event images
+
+HTML and PDF event collages show the original image, the color segmentation image, and GT + Mask overlay. Segmentation images are resolved beside the source images in `Seg/`, with the exact filename replacing `_Raw_` with `_seg_`. Their dimensions must match; missing images show a placeholder and mismatched images block export. In voyage details, First and Stable are stacked vertically for each camera, with metrics under each collage. The chart button is labelled **移至事件**; selecting an event and pressing it retains the existing navigation behavior. Existing delivery folders must be regenerated to receive these changes.
+
+Web event images are separate links: click the original, segmentation, or GT + Mask panel to open its native-resolution image in a new tab. The overlay is exported separately under `overlays/`; PDF collages remain unchanged. Links use packaged relative paths and work offline.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import cv2
+from PIL import Image
 import json
 import math
 import re
@@ -510,7 +511,6 @@ def _validate_attachments(record: dict, attachment: dict, image_path: Path | Non
             warnings.append({"code": f"missing_{field}", "key": record["key"], "message": f"附件檔案不存在：{path}"})
             continue
         try:
-            from PIL import Image
             if field == "labelme":
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
                 if not isinstance(data.get("shapes"), list):
@@ -576,6 +576,21 @@ def validate_config(config: dict, *, progress=None, cancel=None) -> dict:
             if attached_name and Path(attached_name).stem.casefold() != Path(record["filename"]).stem.casefold():
                 errors.append({"code": "attachment_identity_mismatch", "key": record["key"], "message": "附件檔名與評估圖片不一致"})
         assets = _validate_attachments(record, attachment, image_path, errors, warnings)
+        assets.update(seg_path="", seg_status="missing")
+        if image_path:
+            seg = image_path.parent.parent / "Seg" / image_path.name.replace("_Raw_", "_seg_", 1)
+            if seg.is_file():
+                try:
+                    with Image.open(image_path) as raw, Image.open(seg) as segmented:
+                        if raw.size != segmented.size:
+                            raise ValueError("分割影像與原圖尺寸不一致")
+                        segmented.load()
+                    assets.update(seg_path=str(seg), seg_status="valid")
+                except (OSError, ValueError) as exc:
+                    errors.append({"code": "invalid_seg_image", "key": record["key"], "message": str(exc)})
+            else:
+                warnings.append({"code": "missing_seg_image", "key": record["key"], "message": "未提供同事件的分割影像"})
+
         link = _link_project(record, project_rows, pairing_rows, config, errors, warnings)
         parsed = record["parsed"]
         fps = record.get("evaluation_fps")
@@ -607,7 +622,6 @@ def validate_config(config: dict, *, progress=None, cancel=None) -> dict:
         })
         record.pop("evaluation_fps", None)
         if image_path:
-            from PIL import Image
             with Image.open(image_path) as img:
                 record["image_size"] = list(img.size)
         else:

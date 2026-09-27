@@ -160,14 +160,22 @@ def _overview_groups(records):
 
 
 def _run_rows(records):
-    groups = defaultdict(list)
-    for r in records:
-        # Confirmed pairing runs are the primary key; missing links use all identity tokens to avoid accidental merging.
-        link = r.get("analysis_link", {})
-        run_id = link.get("pairing_run_id", "")
-        fallback = (r.get("batch_id", ""), r.get("date", ""), r.get("test", ""), r.get("run_letter", ""), r.get("phase", ""))
-        key = (r.get("date", ""), r.get("test", ""), r.get("run_letter", ""), r.get("phase", ""), run_id or fallback)
-        groups[key].append(r)
+    # Use shared customer identity when the internal run is unambiguous, so an
+    # unlinked second camera can share the same voyage page.
+    identities = defaultdict(list)
+    for record in records:
+        identity = tuple(record.get(k, "") for k in ("batch_id", "date", "test", "run_letter", "phase"))
+        identities[identity].append(record)
+    groups = {}
+    for identity, rows in identities.items():
+        batch, day, test, letter, phase = identity
+        run_ids = {r.get("analysis_link", {}).get("pairing_run_id") for r in rows} - {None, ""}
+        if len(run_ids) <= 1:
+            groups[(day, test, letter, phase, str(identity))] = rows
+        else:
+            for record in rows:
+                run = record.get("analysis_link", {}).get("pairing_run_id") or "unlinked"
+                groups.setdefault((day, test, letter, phase, str(identity) + run), []).append(record)
     return sorted(groups.items(), key=lambda kv: tuple(str(x) for x in kv[0]))
 
 
