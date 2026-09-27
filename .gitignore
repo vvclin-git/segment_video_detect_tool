@@ -8,3 +8,4 @@ batch_export_*/
 tmp_ui_check/
 /delivery_config.local.json
 /deliveries/
+/overlay_previews/

@@ -37,7 +37,8 @@ def _overlay(base: Image.Image, gt_path: Path | None, mask_path: Path | None) ->
     draw = ImageDraw.Draw(result)
     if gt_path:
         data = json.loads(gt_path.read_text(encoding="utf-8-sig"))
-        width = max(1, round(3 * rgb.width / 960))
+        # Original scale-aware option: max(1, round(3 * rgb.width / 960))
+        width = 1
         for shape in data.get("shapes", []):
             points = [(round(float(x)), round(float(y))) for x, y in shape["points"]]
             draw.line(points + [points[0]], fill=RED, width=width, joint="curve")
