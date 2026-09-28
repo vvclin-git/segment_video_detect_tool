@@ -92,7 +92,7 @@ class DeliveryFixture(unittest.TestCase):
         h, w = 768, 960
         self.assertTrue(np.array_equal(collage[48:48 + h, :w], self.base))
         self.assertTrue(np.array_equal(collage[48 + 700, 2 * (w + 28) + 700], self.base[700, 700]))
-        self.assertTrue(np.allclose(collage[48 + 140, 2 * (w + 28) + 140], (60, 144, 162), atol=1))
+        self.assertTrue(np.array_equal(collage[48 + 140, 2 * (w + 28) + 140], (54, 187, 93)))
 
     def test_seg_panel_and_dimension_validation(self):
         seg_dir = self.images.parent / "Seg"
@@ -206,6 +206,10 @@ class DeliveryFixture(unittest.TestCase):
         from delivery_tool.builder import build
 
         self.config["report"]["pdf_layout"] = "both"
+        self.config["report"]["comparison_overlay"] = {
+            "opacity": 0.4,
+            "colors": {"overlap": "#123456", "gt_only": "#654321", "prediction_only": "#00AABB"},
+        }
         result = build(self.config)
         self.assertEqual(len(result["pdfs"]), 2)
         self.assertTrue((result["delivery_dir"] / "index.html").is_file())
@@ -217,6 +221,42 @@ class DeliveryFixture(unittest.TestCase):
         self.assertFalse(Path(record["overlay_image"]).is_absolute())
         self.assertTrue((result["delivery_dir"] / record["overlay_image"]).is_file())
         self.assertEqual(record["iou"], 0.75)
+        self.assertEqual(manifest["comparison_overlay"]["mode"], "three_color_gt_prediction")
+        self.assertEqual(manifest["comparison_overlay"]["opacity"], 0.4)
+        self.assertEqual(manifest["comparison_overlay"]["colors"], {
+            "overlap": "#123456", "gt_only": "#654321", "prediction_only": "#00AABB"})
+        build_config = json.loads((result["delivery_dir"] / "internal" / "build_config.json").read_text(encoding="utf-8"))
+        self.assertEqual(build_config["report"]["comparison_overlay"], {
+            "opacity": 0.4, "colors": {"overlap": "#123456", "gt_only": "#654321", "prediction_only": "#00AABB"}})
+        html = (result["delivery_dir"] / "index.html").read_text(encoding="utf-8")
+        self.assertIn("#123456", html)
+        report_js = (result["delivery_dir"] / "report.js").read_text(encoding="utf-8")
+        self.assertIn("GT 與預測重疊", report_js)
+        self.assertIn("疊圖不透明度", report_js)
+
+        from delivery_tool.pdf_report import _draw_comparison_legend
+
+        class RecordingCanvas:
+            def __init__(self):
+                self.current_color, self.swatch_colors, self.labels = None, [], []
+
+            def setFillColor(self, color):
+                self.current_color = color
+
+            def setFont(self, *_args):
+                pass
+
+            def rect(self, *_args, **_kwargs):
+                self.swatch_colors.append(self.current_color)
+
+            def drawString(self, _x, _y, value):
+                self.labels.append(value)
+
+        pdf_legend = RecordingCanvas()
+        _draw_comparison_legend(pdf_legend, self.config)
+        self.assertEqual([color.hexval().upper().replace("0X", "#") for color in pdf_legend.swatch_colors],
+                         ["#123456", "#654321", "#00AABB"])
+        self.assertIn("疊圖不透明度：40%", pdf_legend.labels[-1])
 
 
 if __name__ == "__main__":

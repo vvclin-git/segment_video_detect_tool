@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import copy
 import hashlib
 import json
 import shutil
@@ -10,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .collage import copy_keyframe, render_collage
-from .config import resolve_path
+from .config import comparison_overlay_settings, resolve_path
 from .dataset import validate_config
 from .exporters import write_csv, write_html
 
@@ -98,7 +99,8 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, pr
                                ("date", "test", "run_letter", "phase", "camera", "event", "frame"))
         collage_path = output / "collages" / (record.get("date") or "unknown_date") / f"{collage_key}.png"
         overlay_path = output / "overlays" / (record.get("date") or "unknown_date") / f"{collage_key}.png"
-        generated = render_collage(record, collage_path, overlay_output=overlay_path)
+        generated = render_collage(record, collage_path, overlay_output=overlay_path,
+                                   comparison_overlay=config.get("report", {}).get("comparison_overlay"))
         record["overlay_image"] = overlay_path.relative_to(output).as_posix() if overlay_path.is_file() else ""
         record["collage"] = generated.relative_to(output).as_posix() if generated else ""
 
@@ -199,6 +201,8 @@ def _write_validation(path: Path, result: dict):
 
 def build(config: dict, *, progress=None, cancel: threading.Event | None = None) -> dict:
     cancel = cancel or threading.Event()
+    config = copy.deepcopy(config)
+    config.setdefault("report", {})["comparison_overlay"] = comparison_overlay_settings(config)
     result = validate_config(config, progress=progress, cancel=cancel)
     if not result["ok"]:
         raise ValueError(json.dumps({"errors": result["errors"], "warnings": result["warnings"]}, ensure_ascii=False, indent=2))

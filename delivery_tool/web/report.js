@@ -17,6 +17,10 @@
   const eventLabels = {
     FirstDetection: 'FirstDetection', StableStart: 'StableStart', StableConfirmation: 'StableConfirmation'
   };
+  const comparisonOverlay = DATA.comparison_overlay || {
+    mode: 'three_color_gt_prediction', opacity: 0.65,
+    colors: {overlap:'#1EEB5A', gt_only:'#FF282D', prediction_only:'#14D2FF'}
+  };
 
   function unique(values) { return [...new Set(values.filter(value => value !== null && value !== undefined && value !== '').map(String))]; }
   function fillSelect(id, values) {
@@ -79,11 +83,25 @@
     const panels = [
       ['原始影像', row.image_copy || row.image_path],
       ['分割影像', row.attachment?.seg_status === 'valid' ? row.attachment.seg_path : ''],
-      ['人工標註＋Mask', row.overlay_image]
+      ['GT／預測比較', row.overlay_image]
     ];
     panels.forEach(([label, path]) => {
       const panel = document.createElement('div'); panel.className = 'image-panel';
       const title = document.createElement('div'); title.className = 'image-panel-title'; title.textContent = label; panel.append(title);
+      if (label === 'GT／預測比較') {
+        const legend = document.createElement('div'); legend.className = 'comparison-legend';
+        const entries = [
+          ['overlap', 'GT 與預測重疊'], ['gt_only', '僅 GT'], ['prediction_only', '僅預測']
+        ];
+        entries.forEach(([key, name]) => {
+          const item = document.createElement('span'); item.className = 'comparison-legend-item';
+          const swatch = document.createElement('i'); swatch.style.backgroundColor = comparisonOverlay.colors?.[key] || '#777777';
+          item.append(swatch, document.createTextNode(name)); legend.append(item);
+        });
+        const opacity = document.createElement('span'); opacity.className = 'comparison-opacity';
+        opacity.textContent = `疊圖不透明度：${Math.round(Number(comparisonOverlay.opacity ?? 0.65) * 100)}%`;
+        legend.append(opacity); panel.append(legend);
+      }
       if (path) {
         const link = document.createElement('a'); link.href = path; link.target = '_blank'; link.rel = 'noopener';
         link.title = `${label}：另開原始解析度圖片`; link.setAttribute('aria-label', link.title);

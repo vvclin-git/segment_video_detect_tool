@@ -11,7 +11,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
-from .config import resolve_path
+from .config import comparison_overlay_settings, resolve_path
 from PIL import Image
 
 
@@ -90,6 +90,23 @@ def _draw_header(pdf, title, subtitle=""):
     pdf.drawString(28, PAGE_H - 32, title)
     pdf.setFont(FONT_NAME, 9)
     pdf.drawString(29, PAGE_H - 50, subtitle)
+
+
+def _draw_comparison_legend(pdf, config):
+    settings = comparison_overlay_settings(config)
+    y = PAGE_H - 80
+    x = 28
+    pdf.setFont(FONT_NAME, 8)
+    labels = (("overlap", "GT 與預測重疊"), ("gt_only", "僅 GT，預測未涵蓋"),
+              ("prediction_only", "僅預測，超出 GT"))
+    for key, label in labels:
+        pdf.setFillColor(colors.HexColor(settings["colors"][key]))
+        pdf.rect(x, y - 1, 9, 9, fill=1, stroke=0)
+        pdf.setFillColor(colors.HexColor("#253942"))
+        pdf.drawString(x + 13, y, label)
+        x += 16 + pdfmetrics.stringWidth(label, FONT_NAME, 8) + 15
+    pdf.setFillColor(colors.HexColor("#253942"))
+    pdf.drawString(x, y, f"疊圖不透明度：{round(settings['opacity'] * 100)}%")
 
 
 def _draw_image(pdf, path: str, x, y, width, height):
@@ -260,7 +277,7 @@ def _draw_summary(pdf, manifest, records, page_num):
     return page_num + 1
 
 
-def _draw_overview(pdf, records, delivery_dir, page_num):
+def _draw_overview(pdf, records, delivery_dir, page_num, config):
     for (day, test, batch), rows in _overview_groups(records):
         runs = defaultdict(list)
         for record in rows:
@@ -269,8 +286,9 @@ def _draw_overview(pdf, records, delivery_dir, page_num):
         pages = [ordered[i:i + 4] for i in range(0, len(ordered), 4)] or [[]]
         for page_index, page_rows in enumerate(pages):
             _draw_header(pdf, "海試結果測試總覽", f"日期 {day}　Test {test}　批次 {batch or '未命名'}" + (f"　續頁 {page_index + 1}" if len(pages) > 1 else ""))
+            _draw_comparison_legend(pdf, config)
             left = 28; label_w = 94; gap = 4; col_w = (PAGE_W - 56 - label_w - 4 * gap) / 4
-            top = PAGE_H - 82; head_h = 24; row_h = 111
+            top = PAGE_H - 90; head_h = 24; row_h = 111
             pdf.setFont(FONT_NAME, 9)
             headers = ["航次／Phase", "Camera 1 First", "Camera 1 Stable", "Camera 2 First", "Camera 2 Stable"]
             widths = [label_w] + [col_w] * 4
@@ -299,16 +317,17 @@ def _draw_overview(pdf, records, delivery_dir, page_num):
     return page_num
 
 
-def _draw_run_detail(pdf, records, delivery_dir, page_num):
+def _draw_run_detail(pdf, records, delivery_dir, page_num, config):
     for key, rows in _run_rows(records):
         day, test, letter, phase, _run_id = key
         header_record = rows[0] if rows else {}
         title = f"航次明細　{day}　Test {test}　{letter}／{phase}"
         conditions = header_record.get("parsed", {}).get("speed", "")
         _draw_header(pdf, title, f"測試條件：{conditions or '未提供'}")
+        _draw_comparison_legend(pdf, config)
         left, gap = 28, 8
         col_w = (PAGE_W - 56 - gap) / 2
-        top = PAGE_H - 82; head_h = 26; row_h = 213
+        top = PAGE_H - 102; head_h = 26; row_h = 213
         _set_grid(pdf)
         for col, title in enumerate(("Camera 1", "Camera 2")):
             x = left + col * (col_w + gap)
@@ -368,7 +387,7 @@ def build_pdf(path: Path, manifest: dict, config: dict, delivery_dir: Path, layo
     page_num = 1 + int(bool(report.get("cover", True)))
     if report.get("summary_table", True):
         page_num = _draw_summary(pdf, manifest, records, page_num)
-    page_num = _draw_overview(pdf, records, delivery_dir, page_num) if layout == "overview" else _draw_run_detail(pdf, records, delivery_dir, page_num)
+    page_num = _draw_overview(pdf, records, delivery_dir, page_num, config) if layout == "overview" else _draw_run_detail(pdf, records, delivery_dir, page_num, config)
     _draw_appendices(pdf, manifest, config, page_num)
     pdf.save()
     return path

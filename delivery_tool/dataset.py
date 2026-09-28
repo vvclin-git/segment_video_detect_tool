@@ -9,7 +9,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from .config import resolve_list, resolve_path
+from .config import comparison_overlay_settings, resolve_list, resolve_path
 from .frame_analysis import build_analysis_sequence, sequence_id
 from .parsing import canonical_event, history_run_mapping, normalize_date, normalize_row, parse_filename
 
@@ -557,6 +557,12 @@ def _validate_attachments(record: dict, attachment: dict, image_path: Path | Non
 
 def validate_config(config: dict, *, progress=None, cancel=None) -> dict:
     errors, warnings = [], []
+    try:
+        overlay_settings = comparison_overlay_settings(config)
+    except ValueError as exc:
+        errors.append({"code": "invalid_comparison_overlay", "key": "report.comparison_overlay",
+                       "message": str(exc)})
+        overlay_settings = comparison_overlay_settings()
     project_rows, pairing_rows = _project_files(config, errors, warnings)
     attachments = _attachment_index(config, errors, warnings)
     records = _evaluation_records(config, errors, warnings)
@@ -677,6 +683,7 @@ def validate_config(config: dict, *, progress=None, cancel=None) -> dict:
                 "test_dates": config.get("test_dates", []), "records": enriched,
                 "project_completeness": completeness,
                 "analysis_sequences": list(sequences_by_id.values()),
+                "comparison_overlay": {"mode": "three_color_gt_prediction", **overlay_settings},
                 "metric_note": "每日 CSV 的 mIoU 原值照錄；既有整理程式來源為 target_iou，未重新計算，非跨類別平均。",
                 "distance_note": "距離採每日 CSV 檢出距離_m；檔名距離僅核對。距離來源為 OCR，人工覆核狀態未知。",
                 "frame_note": "Frame 為 1-based；名目時間以 (frame - 1) / fps 計算。",

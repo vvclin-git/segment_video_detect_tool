@@ -291,8 +291,12 @@ uv run python -m delivery_tool --config .\delivery_config.20260922.validation.js
 
 此資料集的 28 組逐幀載入、逐列比對、影片來源雜湊與事件 Frame 解碼記錄見 [2026-09-22 驗收記錄](docs/frame_charts_20260922_acceptance.md)。
 
-### Three-panel event images
+### GT／預測比較圖與預覽
 
-HTML and PDF event collages show the original image, the color segmentation image, and GT + Mask overlay. Segmentation images are resolved beside the source images in `Seg/`, with the exact filename replacing `_Raw_` with `_seg_`. Their dimensions must match; missing images show a placeholder and mismatched images block export. In voyage details, First and Stable are stacked vertically for each camera, with metrics under each collage. The chart button is labelled **移至事件**; selecting an event and pressing it retains the existing navigation behavior. Existing delivery folders must be regenerated to receive these changes.
+HTML 與 PDF Collage 依序顯示「原始影像／分割影像／GT／預測比較」。比較圖以三個互斥區域著色：GT 與預測重疊、僅 GT、僅預測；背景保持原圖。LabelMe polygon 以整數座標填滿，GT 與已對齊 Mask 使用 `>127` 二值化，不改變 Mask 範圍或評估指標。分割影像位於原圖旁的 `Seg/`，檔名將 `_Raw_` 換成 `_seg_`；尺寸不符會阻擋匯出。
 
-Web event images are separate links: click the original, segmentation, or GT + Mask panel to open its native-resolution image in a new tab. The overlay is exported separately under `overlays/`; PDF collages remain unchanged. Links use packaged relative paths and work offline.
+共用不透明度預設 65%，可在外部設定 JSON 的 `report.comparison_overlay` 下修改。顏色使用 `#RRGGBB`，儲存時轉為大寫；漏填欄位各自使用預設值。GUI 執行資料檢查後，在結果清單選一筆事件並按 **預覽 GT／預測比較**；視窗可調色及不透明度、點選 30%／65%／100% 對照、放大及拖曳。**套用**只更新目前報告設定，按主視窗 **儲存設定** 才寫回 JSON；**取消**不套用。正式輸出採用已儲存或目前設定，HTML 僅顯示生成時固定的圖，不提供瀏覽器端調色。
+
+Collage、獨立 `overlays/` PNG、HTML 與兩種 PDF 共用相同 RGB 比較圖。HTML 保留原圖、分割圖、比較圖各自的原尺寸連結；HTML 與 PDF 圖例會以實際色塊列出分類，並獨立標示「疊圖不透明度」，不代表信心分數。Manifest 的 `comparison_overlay` 與 `internal/build_config.json` 記錄實際渲染模式、顏色及不透明度。既有交付資料夾不會自動改寫；重新建置才會套用新規則。
+
+詳細預覽操作見 [GT／預測比較預覽操作](docs/comparison_overlay_preview.md)。

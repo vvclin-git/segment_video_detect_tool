@@ -8,9 +8,73 @@ import webbrowser
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, W, X, Y, BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
 
+from PIL import Image, ImageTk
+
 from .builder import build
-from .config import DEFAULT_CONFIG, load_config, save_config
+from .config import DEFAULT_CONFIG, comparison_overlay_settings, load_config, save_config
 from .dataset import validate_config
+
+
+class ZoomableImage:
+    """Small canvas image viewer with fit, 100%, wheel zoom, and drag-to-pan."""
+    def __init__(self, parent, image, width=600, height=390):
+        self.image = image.convert("RGB") if isinstance(image, Image.Image) else Image.fromarray(image).convert("RGB")
+        self.fit_mode = True
+        self.scale = 1.0
+        self.photo = None
+        self.canvas = __import__("tkinter").Canvas(parent, width=width, height=height,
+                                                    background="#15242b", highlightthickness=0)
+        self.canvas.pack(fill=BOTH, expand=True)
+        self.canvas.bind("<Configure>", self._redraw)
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<ButtonPress-1>", lambda event: self.canvas.scan_mark(event.x, event.y))
+        self.canvas.bind("<B1-Motion>", lambda event: self.canvas.scan_dragto(event.x, event.y, gain=1))
+        actions = ttk.Frame(parent); actions.pack(fill=X, pady=(3, 0))
+        ttk.Button(actions, text="適合視窗", command=self.fit).pack(side=LEFT)
+        ttk.Button(actions, text="100% 原尺寸", command=self.original_size).pack(side=LEFT, padx=4)
+        ttk.Button(actions, text="縮小", command=lambda: self.zoom(0.8)).pack(side=LEFT)
+        ttk.Button(actions, text="放大", command=lambda: self.zoom(1.25)).pack(side=LEFT, padx=4)
+
+    def set_image(self, image):
+        self.image = image.convert("RGB") if isinstance(image, Image.Image) else Image.fromarray(image).convert("RGB")
+        self._redraw()
+
+    def fit(self):
+        self.fit_mode = True
+        self._redraw()
+
+    def original_size(self):
+        self.fit_mode = False
+        self.scale = 1.0
+        self._redraw()
+
+    def zoom(self, factor):
+        if self.fit_mode:
+            self.scale = self._fit_scale()
+            self.fit_mode = False
+        self.scale = min(8.0, max(0.1, self.scale * factor))
+        self._redraw()
+
+    def _fit_scale(self):
+        width, height = max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())
+        return min(width / self.image.width, height / self.image.height)
+
+    def _wheel(self, event):
+        self.zoom(1.2 if event.delta > 0 else 1 / 1.2)
+
+    def _redraw(self, _event=None):
+        if not self.canvas.winfo_exists():
+            return
+        if self.fit_mode:
+            self.scale = self._fit_scale()
+        width = max(1, round(self.image.width * self.scale))
+        height = max(1, round(self.image.height * self.scale))
+        resized = self.image.resize((width, height), Image.Resampling.LANCZOS)
+        self.photo = ImageTk.PhotoImage(resized)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
+        self.canvas.configure(scrollregion=(0, 0, max(width, self.canvas.winfo_width()),
+                                             max(height, self.canvas.winfo_height())))
 
 
 def launch(config_path: str | None = None):
@@ -32,6 +96,8 @@ class DeliveryApp:
         self.validation_result = None
         self.event_records = {}
         self.project_assets_roots = {}
+        self.comparison_overlay = comparison_overlay_settings()
+        self.config_dirty = False
         self.config_file = StringVar(value=config_path or "")
         self.status = StringVar(value="選擇或建立設定檔，載入輸入資料後執行檢查。")
         self.progress_text = StringVar(value="")
@@ -95,6 +161,16 @@ class DeliveryApp:
         self._report_row(report, "scope", "納入範圍")
         self._path_row(report, "logo", "Logo 圖片（選用）", "file", report=True)
         self._path_row(report, "font_path", "中文字型路徑（選用）", "file", report=True)
+        overlay_summary = ttk.Frame(report); overlay_summary.pack(fill=X, pady=(3, 5))
+        self.overlay_summary_text = StringVar(value="")
+        ttk.Label(overlay_summary, textvariable=self.overlay_summary_text).pack(side=LEFT, padx=(0, 10))
+        self.overlay_swatch_labels = []
+        for label in ("重疊", "僅 GT", "僅預測"):
+            swatch = __import__("tkinter").Label(overlay_summary, text=label, padx=6, pady=2,
+                                                  relief="solid", borderwidth=1)
+            swatch.pack(side=LEFT, padx=3)
+            self.overlay_swatch_labels.append(swatch)
+        self._refresh_overlay_summary()
         self.values["include_videos"] = BooleanVar(value=False)
         ttk.Checkbutton(report, text="將唯一配對影片複製到交付包", variable=self.values["include_videos"]).pack(anchor=W)
         self.values["include_frame_charts"] = BooleanVar(value=True)
@@ -120,6 +196,11 @@ class DeliveryApp:
         ttk.Label(self.root, textvariable=self.status, padding=(12, 1)).pack(fill=X)
 
         issue_frame = ttk.LabelFrame(self.root, text="檢查結果與缺漏", padding=6); issue_frame.pack(fill=BOTH, expand=True, padx=10, pady=(0, 10))
+        result_actions = ttk.Frame(issue_frame); result_actions.pack(fill=X, pady=(0, 5))
+        self.comparison_preview_button = ttk.Button(result_actions, text="預覽 GT／預測比較",
+                                                    command=self._preview_comparison, state="disabled")
+        self.comparison_preview_button.pack(side=LEFT)
+        ttk.Label(result_actions, text="請先在下方選取一筆評估事件。", foreground="#60737c").pack(side=LEFT, padx=9)
         columns = ("level", "code", "key", "message")
         self.issue_tree = ttk.Treeview(issue_frame, columns=columns, show="headings", height=10)
         for col, title, width in (("level", "級別", 70), ("code", "類型", 180), ("key", "事件鍵", 240), ("message", "說明", 520)):
@@ -127,6 +208,13 @@ class DeliveryApp:
         self.issue_tree.pack(side=LEFT, fill=BOTH, expand=True)
         sb = ttk.Scrollbar(issue_frame, orient="vertical", command=self.issue_tree.yview); sb.pack(side=RIGHT, fill=Y)
         self.issue_tree.configure(yscrollcommand=sb.set)
+
+    def _refresh_overlay_summary(self):
+        settings = comparison_overlay_settings(self.comparison_overlay)
+        suffix = "（尚未儲存）" if self.config_dirty else ""
+        self.overlay_summary_text.set(f"疊圖不透明度：{round(settings['opacity'] * 100)}%{suffix}")
+        for label, key in zip(self.overlay_swatch_labels, ("overlap", "gt_only", "prediction_only")):
+            label.configure(background=settings["colors"][key], foreground="#101820")
 
     def _path_row(self, parent, key, label, kind, report=False):
         row = ttk.Frame(parent); row.pack(fill=X, pady=2)
@@ -226,6 +314,9 @@ class DeliveryApp:
             self.values["test_dates"].set(",".join(config.get("test_dates", [])))
             self.values["batch_id"].set(str(config.get("batch_id", "")))
             report = config.get("report", {})
+            self.comparison_overlay = comparison_overlay_settings(config)
+            self.config_dirty = False
+            self._refresh_overlay_summary()
             for key in ("pdf_layout", "report_name", "customer_project", "version", "scope", "logo", "font_path"):
                 self.values[key].set(str(report.get(key, "overview" if key == "pdf_layout" else "")))
             for key in ("cover", "summary_table", "missing_appendix"):
@@ -253,6 +344,7 @@ class DeliveryApp:
         config["project_assets_roots"] = dict(self.project_assets_roots)
         config["report"].update({key: self.values[key].get().strip() for key in
                                  ("pdf_layout", "report_name", "customer_project", "version", "scope", "logo", "font_path")})
+        config["report"]["comparison_overlay"] = comparison_overlay_settings(self.comparison_overlay)
         config["report"].update({key: bool(self.values[key].get()) for key in ("cover", "summary_table", "missing_appendix")})
         config["report"]["notes"] = self.values["notes"].get("1.0", "end-1c")
         path = self.config_file.get().strip()
@@ -269,6 +361,8 @@ class DeliveryApp:
             self.config_file.set(path)
         try:
             save_config(path, self._current_config())
+            self.config_dirty = False
+            self._refresh_overlay_summary()
             self.status.set(f"設定已儲存：{path}")
         except Exception as exc:
             messagebox.showerror("儲存失敗", str(exc))
@@ -281,6 +375,8 @@ class DeliveryApp:
                 return False
             self.config_file.set(path)
         save_config(path, config)
+        self.config_dirty = False
+        self._refresh_overlay_summary()
         self.status.set(f"關聯修正已寫入設定：{path}")
         return True
 
@@ -345,6 +441,7 @@ class DeliveryApp:
             return
         self.busy = True; self.cancel_event.clear(); self.last_result = None
         self.preview_button.configure(state="disabled"); self.cancel_button.configure(state="normal")
+        self.comparison_preview_button.configure(state="disabled")
         self.validate_button.configure(state="disabled"); self.build_button.configure(state="disabled")
         self.progress_value.set("0"); self.progress_text.set("")
         config = self._current_config()
@@ -384,6 +481,196 @@ class DeliveryApp:
                 self.event_records[iid] = record
                 self.issue_tree.insert("", END, iid=iid, values=("事件", "評估事件", record.get("key", ""),
                     f"{record.get('date')} · {record.get('camera')} · {record.get('event')} · F{record.get('frame')} · GT {record.get('attachment',{}).get('gt_status')}／Mask {record.get('attachment',{}).get('mask_status')}"))
+        self.comparison_preview_button.configure(state="normal" if self.event_records else "disabled")
+
+    def _preview_comparison(self):
+        selection = self.issue_tree.selection()
+        if not selection or selection[0] not in self.event_records:
+            messagebox.showinfo("選擇事件", "請先在檢查結果中選取一筆評估事件。", parent=self.root)
+            return
+        record = self.event_records[selection[0]]
+        attachment = record.get("attachment", {})
+        missing = []
+        if not record.get("image_path") or record.get("image_status") != "found":
+            missing.append("原圖：" + (record.get("image_status") or "未提供"))
+        if attachment.get("gt_status") != "valid" or not attachment.get("labelme_path"):
+            missing.append("GT：" + str(attachment.get("gt_status") or "missing"))
+        if attachment.get("mask_status") != "valid" or not attachment.get("mask_path"):
+            missing.append("預測 Mask：" + str(attachment.get("mask_status") or "missing"))
+        if missing:
+            messagebox.showerror("比較預覽缺少附件", "此事件無法預覽：\n" + "\n".join(missing), parent=self.root)
+            return
+        try:
+            from .collage import load_comparison_layers
+            base, regions = load_comparison_layers(record["image_path"], attachment["labelme_path"], attachment["mask_path"])
+        except Exception as exc:
+            messagebox.showerror("比較預覽失敗", f"讀取事件附件失敗：{exc}", parent=self.root)
+            return
+        self._show_comparison_dialog(record, base, regions)
+
+    def _show_comparison_dialog(self, record, base, regions):
+        from .collage import render_comparison
+        from PIL import ImageOps
+        from tkinter.colorchooser import askcolor
+
+        dialog = __import__("tkinter").Toplevel(self.root)
+        dialog.title("預覽 GT／預測比較")
+        dialog.geometry("1400x940")
+        dialog.minsize(1120, 800)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        ttk.Label(dialog, text=(f"{record.get('date', '—')}　Test {record.get('test', '—')}　"
+                               f"航次 {record.get('run_letter', '—')}／{record.get('phase', '—')}　"
+                               f"{record.get('camera', '—')}　{record.get('event', '—')}　Frame {record.get('frame', '—')}"),
+                  padding=(12, 8), font=("TkDefaultFont", 11, "bold")).pack(fill=X)
+
+        start = comparison_overlay_settings(self.comparison_overlay)
+        colors = dict(start["colors"])
+        color_vars = {key: StringVar(value=colors[key]) for key in colors}
+        opacity_var = StringVar(value=str(round(start["opacity"] * 100)))
+        opacity_scale_var = __import__("tkinter").IntVar(value=round(start["opacity"] * 100))
+        error_var, note_var = StringVar(value=""), StringVar(value="")
+        pending = {"after": None}
+        previews = {}
+
+        controls = ttk.LabelFrame(dialog, text="比較圖設定", padding=7)
+        controls.pack(fill=X, padx=10, pady=(0, 5))
+        categories = (("overlap", "GT 與預測重疊"), ("gt_only", "僅 GT，預測未涵蓋"),
+                      ("prediction_only", "僅預測，超出 GT"))
+        color_swatches = {}
+        for row_index, (key, label) in enumerate(categories):
+            ttk.Label(controls, text=label, width=29).grid(row=row_index, column=0, sticky="w", pady=2)
+            swatch = __import__("tkinter").Label(controls, text="   ", background=color_vars[key].get(),
+                                                   relief="solid", borderwidth=1)
+            swatch.grid(row=row_index, column=1, sticky="w", padx=(0, 5))
+            color_swatches[key] = swatch
+            ttk.Entry(controls, textvariable=color_vars[key], width=12).grid(row=row_index, column=2, sticky="w", padx=4)
+            ttk.Button(controls, text="選擇顏色…", command=lambda k=key: choose_color(k)).grid(row=row_index, column=3, sticky="w")
+        ttk.Label(controls, text="共用疊圖不透明度", width=29).grid(row=3, column=0, sticky="w", pady=3)
+        scale = __import__("tkinter").Scale(controls, from_=0, to=100, resolution=1, orient="horizontal",
+                                              showvalue=False, variable=opacity_scale_var, length=390)
+        scale.grid(row=3, column=1, columnspan=3, sticky="w")
+        ttk.Spinbox(controls, from_=0, to=100, increment=1, textvariable=opacity_var, width=6).grid(row=3, column=4, sticky="w", padx=(8, 2))
+        ttk.Label(controls, text="%").grid(row=3, column=5, sticky="w")
+        ttk.Label(controls, textvariable=error_var, foreground="#a12828").grid(row=4, column=0, columnspan=6, sticky="w")
+        ttk.Label(controls, textvariable=note_var, foreground="#765b20").grid(row=5, column=0, columnspan=6, sticky="w")
+
+        pair = ttk.Frame(dialog, padding=(10, 2)); pair.pack(fill=BOTH, expand=True)
+        left = ttk.LabelFrame(pair, text="原圖", padding=5); left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 5))
+        right = ttk.LabelFrame(pair, text="目前設定比較圖", padding=5); right.pack(side=LEFT, fill=BOTH, expand=True, padx=(5, 0))
+        original_view = ZoomableImage(left, base, width=650, height=330)
+        current_view = ZoomableImage(right, base, width=650, height=330)
+
+        compare = ttk.LabelFrame(dialog, text="比較不同比例（點圖即可選用）", padding=(8, 4))
+        compare.pack(fill=X, padx=10, pady=(3, 4))
+        for column, percent in enumerate((30, 65, 100)):
+            frame = ttk.Frame(compare, padding=4); frame.grid(row=0, column=column, sticky="nsew", padx=5)
+            compare.columnconfigure(column, weight=1)
+            ttk.Label(frame, text=f"{percent}%").pack()
+            button = __import__("tkinter").Button(frame, relief="flat", cursor="hand2",
+                                                   command=lambda value=percent: opacity_var.set(str(value)))
+            button.pack(fill=X)
+            previews[percent] = button
+
+        def choose_color(key):
+            candidate = color_vars[key].get()
+            initial = candidate if len(candidate) == 7 and candidate.startswith("#") else "#FFFFFF"
+            picked = askcolor(color=initial, parent=dialog, title=f"{dict(categories)[key]} 顏色")[1]
+            if picked:
+                color_vars[key].set(picked.upper())
+
+        def current_draft():
+            try:
+                raw_percent = opacity_var.get().strip()
+                if not raw_percent or not raw_percent.isdecimal():
+                    raise ValueError("report.comparison_overlay.opacity：請輸入 0–100 的整數百分比")
+                percent = int(raw_percent)
+                if not 0 <= percent <= 100:
+                    raise ValueError("report.comparison_overlay.opacity：數值必須介於 0–100%")
+                return comparison_overlay_settings({"comparison_overlay": {
+                    "opacity": percent / 100,
+                    "colors": {key: variable.get() for key, variable in color_vars.items()},
+                }})
+            except ValueError as exc:
+                error_var.set(str(exc))
+                note_var.set("")
+                return None
+
+        def refresh_preview():
+            pending["after"] = None
+            settings = current_draft()
+            if settings is None:
+                return
+            error_var.set("")
+            distinct = len(set(settings["colors"].values())) == 3
+            if not distinct:
+                note_var.set("有分類使用相同顏色，可能不易區分。")
+            elif settings["opacity"] == 0:
+                note_var.set("0% 不透明度會顯示原圖，無法從顏色區分分類。")
+            else:
+                note_var.set("")
+            current_view.set_image(render_comparison(base, regions, settings))
+            for percent, button in previews.items():
+                thumb = render_comparison(base, regions, {"opacity": percent / 100, "colors": settings["colors"]})
+                thumb = ImageOps.contain(thumb, (380, 150), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(thumb)
+                button.configure(image=photo)
+                button.image = photo
+
+        def schedule_preview(*_args):
+            if pending["after"] is not None:
+                try:
+                    dialog.after_cancel(pending["after"])
+                except Exception:
+                    pass
+            pending["after"] = dialog.after(100, refresh_preview)
+
+        def sync_scale_to_entry(*_args):
+            value = opacity_scale_var.get()
+            if opacity_var.get() != str(value):
+                opacity_var.set(str(value))
+
+        def sync_entry_to_scale(*_args):
+            value = opacity_var.get().strip()
+            if value.isdecimal() and 0 <= int(value) <= 100 and opacity_scale_var.get() != int(value):
+                opacity_scale_var.set(int(value))
+            schedule_preview()
+
+        def update_color_swatch(key):
+            candidate = color_vars[key].get()
+            try:
+                dialog.winfo_rgb(candidate)
+                color_swatches[key].configure(background=candidate)
+            except Exception:
+                pass
+
+        for key, variable in color_vars.items():
+            variable.trace_add("write", schedule_preview)
+            variable.trace_add("write", lambda *_args, color_key=key: update_color_swatch(color_key))
+        opacity_scale_var.trace_add("write", sync_scale_to_entry)
+        opacity_var.trace_add("write", sync_entry_to_scale)
+
+        footer = ttk.Frame(dialog, padding=(10, 5)); footer.pack(fill=X)
+
+        def restore_defaults():
+            defaults = comparison_overlay_settings()
+            for key, variable in color_vars.items():
+                variable.set(defaults["colors"][key])
+            opacity_var.set("65")
+
+        def apply_settings():
+            settings = current_draft()
+            if settings is None:
+                return
+            self.comparison_overlay = settings
+            self.config_dirty = True
+            self._refresh_overlay_summary()
+            dialog.destroy()
+
+        ttk.Button(footer, text="恢復預設", command=restore_defaults).pack(side=LEFT)
+        ttk.Button(footer, text="套用", command=apply_settings).pack(side=RIGHT)
+        ttk.Button(footer, text="取消", command=dialog.destroy).pack(side=RIGHT, padx=7)
+        schedule_preview()
 
     def _poll(self):
         try:
@@ -416,6 +703,7 @@ class DeliveryApp:
     def _finish(self):
         self.busy = False; self.cancel_button.configure(state="disabled")
         self.validate_button.configure(state="normal"); self.build_button.configure(state="normal")
+        self.comparison_preview_button.configure(state="normal" if self.event_records else "disabled")
         self.progress_text.set("")
 
     def _open_preview(self):

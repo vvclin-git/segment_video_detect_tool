@@ -27,6 +27,14 @@
     "cover": true,
     "summary_table": true,
     "missing_appendix": false,
-    "font_path": ""
+    "font_path": "",
+    "comparison_overlay": {
+      "opacity": 0.65,
+      "colors": {
+        "overlap": "#1EEB5A",
+        "gt_only": "#FF282D",
+        "prediction_only": "#14D2FF"
+      }
+    }
   }
 }

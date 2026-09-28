@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "test_dates": ["2026-09-22"],
+  "batch_id": "sea-trial-20260922-comparison-overlay",
+  "projects": ["C:/Workplace/segmet_video_detect_tool_data/run_data/analysis_project_60.json"],
+  "pairings": ["C:/Workplace/segmet_video_detect_tool_data/run_data/pairing_FOV_60.json"],
+  "evaluation_csvs": ["C:/Workplace/seg_files/miou_detection_distance_20260922.csv"],
+  "attachment_index": "C:/Workplace/seg_files/miou_report/miou_results.csv",
+  "attachment_root": "C:/Workplace/seg_files",
+  "image_root": "C:/Workplace/seg_files/labeled",
+  "mask_root": "C:/Workplace/seg_files",
+  "video_root": "C:/Workplace/segmet_video_detect_tool_data/run_data/60度",
+  "output_dir": "C:/Workplace/segment_video_detect_tool/deliveries/2026-09-22-comparison-validation",
+  "include_videos": false,
+  "include_frame_charts": true,
+  "project_assets_roots": {
+    "f6ef21ba3b4947cfb0816c90d19121d6": "C:/Workplace/segmet_video_detect_tool_data/run_data/analysis_project_60.assets"
+  },
+  "pairing_run_id_map": {},
+  "event_links": {},
+  "report": {
+    "pdf_layout": "both",
+    "report_name": "2026-09-22 GT／預測比較驗證",
+    "customer_project": "FOV 60",
+    "version": "1.0",
+    "logo": "",
+    "scope": "2026-09-22 全部評估事件；驗證三色 GT／預測疊圖一致性",
+    "notes": "獨立比較圖驗證設定，不覆寫既有交付資料夾。",
+    "cover": true,
+    "summary_table": true,
+    "missing_appendix": true,
+    "font_path": "",
+    "comparison_overlay": {
+      "opacity": 0.65,
+      "colors": {
+        "overlap": "#1EEB5A",
+        "gt_only": "#FF282D",
+        "prediction_only": "#14D2FF"
+      }
+    }
+  }
+}
