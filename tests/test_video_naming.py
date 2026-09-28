@@ -69,6 +69,74 @@ class VideoNamingTests(unittest.TestCase):
         _video_package_plan(result, [], {"video_filename_template": "bad/name", "include_videos": False})
         self.assertEqual(result["errors"][0]["code"], "invalid_video_filename_template")
 
+    def test_legacy_phases_name_event_and_unassessed_videos_as_distinct_runs(self):
+        for day in ("2026-09-15", "2026-09-18", "2026-09-22"):
+            for embedded in (False, True):
+                with self.subTest(day=day, embedded=embedded):
+                    records, sequences, pairings = [], [], []
+                    for number, letter in enumerate("ABCD", 1):
+                        source = self.root / f"{day}-P{number}.mp4"
+                        source.write_bytes(letter.encode())
+                        pairing = self.pairing(f"run{number}", source, scenario=6, voyage_date=day)
+                        pairing["run"]["phase"] = "P1" if day == "2026-09-15" else f"P{number}"
+                        pairing["run"]["note"] = f"{number * 5}kt" if day == "2026-09-15" else ""
+                        pairings.append(pairing)
+                        link = {"status": "linked", "pairing_run_id": f"run{number}",
+                                "video_path": str(source), "video_pairing_run": pairing["run"]}
+                        if number < 4:
+                            for event in ("FirstDetection", "StableStart"):
+                                row = self.record(f"{letter}-{event}", f"run{number}", source, f"seq{number}")
+                                if embedded:
+                                    row["analysis_link"].update(link)
+                                records.append(row)
+                        sequences.append({"sequence_id": f"seq{number}", "camera": self.camera,
+                                          "pairing_run_id": f"run{number}", "_video_link": link})
+                    result = {"errors": [], "warnings": [], "manifest": {
+                        "records": records, "analysis_sequences": sequences}}
+                    plan = _video_package_plan(result, [] if embedded else pairings, {"include_videos": True})
+                    self.assertEqual(result["errors"], [])
+                    self.assertEqual(len(plan["sources"]), 4)
+                    for number, letter in enumerate("ABCD", 1):
+                        expected = f"videos/{day}/Camera1_Test6_{letter}_{day.replace('-', '')[2:]}.mp4"
+                        self.assertEqual(plan["sequence_paths"][f"seq{number}"], expected)
+                        if number < 4:
+                            for event in ("FirstDetection", "StableStart"):
+                                self.assertEqual(plan["record_paths"][f"{letter}-{event}"], expected)
+
+    def test_legacy_correction_does_not_guess_other_dates_or_angles(self):
+        source = self.root / "source.mp4"
+        row = self.record("event", "run", source)
+        for day, angle, phase, expected in (("2026-09-15", "A", "P2", ""),
+                                            ("2026-09-22", "B", "P3", "B"),
+                                            ("2026-09-22", "A", "", "A")):
+            pairing = self.pairing("run", source, angle=angle, voyage_date=day)
+            pairing["run"]["phase"] = phase
+            values = paired_video_filename_values(row, [pairing], source)
+            self.assertEqual(values["run"], expected)
+
+    def test_september_15_notes_require_an_unambiguous_speed_suffix(self):
+        source = self.root / "source.mp4"
+        source.touch()
+        record = self.record("event", "run", source)
+        for note, expected in (("5kt", "A"), ("10KT", "B"), ("航次備註_15 kt ", "C"),
+                               ("20kt", "D"), ("", ""), ("25kt", ""), ("15.5kt", ""),
+                               ("5kt 10kt", ""), ("10kt 取消", "")):
+            with self.subTest(note=note):
+                pairing = self.pairing("run", source, voyage_date="2026-09-15")
+                pairing["run"].update(note=note, phase="P1")
+                self.assertEqual(paired_video_filename_values(record, [pairing], source)["run"], expected)
+        result = {"errors": [], "warnings": [], "manifest": {"records": [record], "analysis_sequences": []}}
+        plan = _video_package_plan(result, [pairing], {"include_videos": True})
+        self.assertEqual(plan["sources"], {})
+        self.assertIn("note 尾綴", result["errors"][0]["message"])
+
+    def test_project_item_note_is_available_when_embedded_note_is_empty(self):
+        from delivery_tool.dataset import project_video_link
+        item = {"path": "clip.mp4", "note": "10kt", "pairing_run": {"note": ""}}
+        link = project_video_link({"item": item, "project_path": str(self.root / "project.json")})
+        self.assertEqual(link["video_pairing_run"]["note"], "10kt")
+        self.assertEqual(item["pairing_run"]["note"], "")
+
     def test_missing_paired_fields_are_reported(self):
         video = self.root / "source.mp4"
         video.touch()

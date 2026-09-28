@@ -72,7 +72,7 @@ def render_video_filename_stem(template: str, values: dict) -> str:
 
 def paired_video_filename_values(record: dict, pairings: list, source=None) -> dict:
     """Extract filename values only from the paired voyage and camera metadata."""
-    from .parsing import normalize_date
+    from .parsing import history_run_mapping, normalize_date
 
     analysis_link = record.get("analysis_link") or {}
     run_id = str(analysis_link.get("pairing_run_id") or record.get("parsed", {}).get("run_id") or "")
@@ -122,6 +122,20 @@ def paired_video_filename_values(record: dict, pairings: list, source=None) -> d
             camera_value = str(int(camera_value))
         run_value = str(run.get("angle") or run.get("runLetter") or run.get("sequence") or "").strip()
         normalized_date = normalize_date(voyage.get("date") or run.get("startedAt"))
+        if normalized_date == "2026-09-15":
+            # The September 15 logger kept phase P1 for every run. The user
+            # confirmed that the note's speed suffix identifies runs A-D.
+            note = str(run.get("note") or "").strip()
+            speeds = re.findall(r"(?<![a-z0-9.])(\d+)\s*kt(?![a-z0-9])", note, re.I)
+            suffix = re.search(r"(?<![a-z0-9.])(\d+)\s*kt\s*$", note, re.I)
+            run_value = ({"5": "A", "10": "B", "15": "C", "20": "D"}.get(suffix.group(1), "")
+                         if suffix and len(set(speeds)) == 1 else "")
+        # Use the same legacy correction as evaluation identities. These voyages
+        # stored angle A for P1-P4, which represent delivery runs A-D.
+        mapping = history_run_mapping({"date": normalized_date, "run_letter": run_value,
+                                       "phase": str(run.get("phase") or "")})
+        if mapping:
+            run_value = mapping["run_letter"]
         date_value = date.fromisoformat(normalized_date) if normalized_date else None
         return {"camera": camera_value, "test": scenario, "run": run_value, "date": date_value}
 

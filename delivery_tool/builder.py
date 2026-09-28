@@ -106,10 +106,12 @@ def _video_package_plan(result: dict, pairings: list, config: dict) -> dict:
             values = paired_video_filename_values(record, pairings, source)
             missing = sorted(field for field in fields if not values.get(field))
             if missing:
+                hint = ("；9/15 的 run 必須由 note 尾綴 5kt／10kt／15kt／20kt 對應 A／B／C／D"
+                        if "run" in missing and str(values.get("date")) == "2026-09-15" else "")
                 result["errors"].append({
                     "code": "missing_video_filename_data",
                     "key": record_key or sequence_id,
-                    "message": f"影片 {source.name} 缺少配對命名資料：{', '.join(missing)}",
+                    "message": f"影片 {source.name} 缺少配對命名資料：{', '.join(missing)}{hint}",
                 })
                 return
             try:
@@ -156,6 +158,7 @@ def _video_package_plan(result: dict, pairings: list, config: dict) -> dict:
         source = _video_for_record(surrogate, pairings, config, result["errors"], result["warnings"])
         if source:
             add_video(surrogate, source, sequence_id=sid)
+
     return plan
 
 

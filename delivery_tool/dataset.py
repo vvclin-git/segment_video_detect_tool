@@ -561,7 +561,10 @@ def project_video_link(row: dict) -> dict:
     source = str(item.get("path") or "")
     if source and not Path(source).is_absolute():
         source = str((Path(row["project_path"]).parent / source).resolve())
-    return {"video_path": source, "video_pairing_run": item.get("pairing_run") or {}}
+    run = dict(item.get("pairing_run") or {})
+    if not run.get("note") and item.get("note"):
+        run["note"] = item["note"]
+    return {"video_path": source, "video_pairing_run": run}
 
 
 def _validate_attachments(record: dict, attachment: dict, image_path: Path | None, errors: list, warnings: list):
