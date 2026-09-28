@@ -6,6 +6,8 @@ import hashlib
 import json
 import shutil
 import threading
+import tempfile
+import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -175,6 +177,8 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, vi
     for identity, source in video_plan.get("sources", {}).items():
         if cancel and cancel.is_set():
             raise InterruptedError("已取消")
+        if progress:
+            progress(0, max(1, len(manifest["records"])), f"複製影片：{source} → {output / video_plan['source_paths'][identity]}")
         _copy_video(source, output, video_plan["source_paths"][identity])
     records = manifest["records"]
     for index, record in enumerate(records):
@@ -182,6 +186,8 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, vi
             raise InterruptedError("已取消")
         if record.get("image_path"):
             source = Path(record["image_path"])
+            if progress:
+                progress(index, len(records), f"複製事件原圖：{source} → {output}")
             record["source_image_name"] = source.name
             record["image_copy"] = copy_keyframe(record, output)
         collage_key = "_".join(_safe_name(str(record.get(k, ""))) for k in
@@ -189,6 +195,8 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, vi
         collage_path = output / "collages" / (record.get("date") or "unknown_date") / f"{collage_key}.png"
         overlay_path = output / "overlays" / (record.get("date") or "unknown_date") / f"{collage_key}.png"
         comparison_counts = {}
+        if progress:
+            progress(index, len(records), f"產生事件比較圖：{collage_path}；疊圖：{overlay_path}")
         generated = render_collage(record, collage_path, overlay_output=overlay_path,
                                    comparison_overlay=config.get("report", {}).get("comparison_overlay"),
                                    pixel_counts=comparison_counts)
@@ -201,6 +209,8 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, vi
         for field, subdir in (("labelme_path", "labelme"), ("mask_path", "masks"), ("seg_path", "seg")):
             source_text = attachment.get(field, "")
             if source_text and Path(source_text).is_file():
+                if progress:
+                    progress(index, len(records), f"複製 {subdir} 附件：{source_text} → {output / 'internal' / 'attachments' / subdir}")
                 attachment[field] = _copy_source(Path(source_text), output, Path("internal/attachments") / subdir,
                                                  record.get("date", ""))
             else:
@@ -243,6 +253,8 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, vi
                           .replace("&", "\\u0026").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
             relative = Path("analysis") / f"{sid}.js"
             target = output / relative
+            if progress:
+                progress(len(records), len(records), f"寫入逐幀資料：{target}")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("window.__SEA_TRIAL_FRAME_DATA__=window.__SEA_TRIAL_FRAME_DATA__||{};"
                               f"window.__SEA_TRIAL_FRAME_DATA__[{json.dumps(sid)}]={serialized};", encoding="utf-8")
@@ -276,24 +288,77 @@ def _write_validation(path: Path, result: dict):
 
 
 def build(config: dict, *, progress=None, cancel: threading.Event | None = None) -> dict:
+    last_step = "開始產生交付包"
+    def report(done, total, message):
+        nonlocal last_step
+        last_step = message
+        if progress:
+            progress(done, total, message)
+    try:
+        result = _build(config, progress=report, cancel=cancel)
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        details = [f"交付包產生失敗：{exc}", f"失敗階段：{last_step}",
+                   f"輸出目錄設定：{config.get('output_dir', '')}",
+                   f"設定檔目錄：{config.get('_config_dir', '')}",
+                   f"工作目錄：{Path.cwd()}", f"錯誤類型：{type(exc).__name__}"]
+        for attribute in ("winerror", "errno", "filename", "filename2"):
+            value = getattr(exc, attribute, None)
+            if value is not None:
+                details.append(f"{attribute}：{value}")
+                if attribute.startswith("filename"):
+                    details.append(f"路徑字元數：{len(str(value))}")
+        details.append("完整 traceback：\n" + traceback.format_exc())
+        diagnostic = "\n".join(details)
+        log_name = f"delivery_error_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}.txt"
+        log_path = None
+        directories = []
+        try:
+            output = resolve_path(config, config.get("output_dir"))
+            if output:
+                directories.append(output)
+        except (OSError, ValueError):
+            pass
+        directories.append(Path(tempfile.gettempdir()))
+        for directory in directories:
+            try:
+                candidate = directory / log_name
+                candidate.write_text(diagnostic, encoding="utf-8")
+                log_path = candidate.resolve()
+                break
+            except (OSError, ValueError):
+                continue
+        location = f"診斷檔：{log_path}" if log_path else "診斷檔無法寫入；請複製下方完整訊息。"
+        raise ValueError(f"{location}\n{diagnostic}") from exc
+    report(100, 100, f"交付包完成：{result['delivery_dir']}")
+    return result
+
+
+def _build(config: dict, *, progress, cancel: threading.Event | None = None) -> dict:
     cancel = cancel or threading.Event()
     config = copy.deepcopy(config)
     config.setdefault("video_filename_template", DEFAULT_VIDEO_FILENAME_TEMPLATE)
     config.setdefault("report", {})["comparison_overlay"] = comparison_overlay_settings(config)
-    result = validate_config(config, progress=progress, cancel=cancel)
+    progress(0, 100, "檢查輸入與影片來源")
+    result = validate_config(config, progress=lambda done, total, message: progress(
+        15 * done / max(1, total), 100, f"檢查輸入：{message}"), cancel=cancel)
     if not result["ok"]:
         raise ValueError(json.dumps({"errors": result["errors"], "warnings": result["warnings"]}, ensure_ascii=False, indent=2))
     if cancel.is_set():
         raise InterruptedError("已取消")
+    progress(16, 100, "規劃交付影片檔名")
     video_plan = _video_package_plan(result, result["pairings"], config)
     if result["errors"]:
         raise ValueError(json.dumps({"errors": result["errors"], "warnings": result["warnings"]}, ensure_ascii=False, indent=2))
     parent = resolve_path(config, config.get("output_dir"))
     if parent is None:
         raise ValueError("請設定 output_dir")
+    progress(18, 100, f"建立輸出目錄：{parent.resolve()}")
     parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     delivery = parent / f"delivery_{timestamp}_{uuid.uuid4().hex[:8]}"
+    progress(19, 100, f"建立交付包目錄：{delivery.resolve()}")
     delivery.mkdir()
     try:
         for record in result["manifest"]["records"]:
@@ -305,28 +370,38 @@ def build(config: dict, *, progress=None, cancel: threading.Event | None = None)
              "status": sequence.get("status"), "source_path": sequence.get("_source_path", ""),
              "source_candidates": sequence.get("_source_candidates", [])}
             for sequence in result["manifest"].get("analysis_sequences", [])]
-        manifest = _package_assets(result, delivery, result["pairings"], config, video_plan, progress, cancel)
+        progress(20, 100, f"複製影片與整理附件：{delivery}")
+        manifest = _package_assets(result, delivery, result["pairings"], config, video_plan,
+                                   lambda done, total, message: progress(20 + 60 * done / max(1, total), 100, message), cancel)
         # Optional video pairing can add validation findings after the initial pass.
         manifest["validation"] = {"errors": result["errors"], "warnings": result["warnings"]}
         if result["errors"]:
             raise ValueError(json.dumps({"errors": result["errors"], "warnings": result["warnings"]}, ensure_ascii=False, indent=2))
+        progress(82, 100, f"寫入驗證報告：{delivery / 'internal' / 'validation_report.json'}")
         _write_validation(delivery / "internal" / "validation_report.json", result)
         clean_config = {k: v for k, v in config.items() if not k.startswith("_")}
+        progress(83, 100, f"寫入交付設定：{delivery / 'internal' / 'build_config.json'}")
         _atomic_json(delivery / "internal" / "build_config.json", clean_config)
+        progress(84, 100, f"寫入交付清單：{delivery / 'internal' / 'result_manifest.json'}")
         _atomic_json(delivery / "internal" / "result_manifest.json", manifest)
+        progress(85, 100, f"產生 CSV：{delivery / 'result_summary.csv'}")
         write_csv(delivery / "result_summary.csv", manifest)
+        progress(87, 100, f"產生 HTML：{delivery / 'index.html'}；前端資源目錄：{Path(__file__).parent / 'web'}")
         write_html(delivery / "index.html", manifest, config, result["counts"])
 
         from .pdf_report import build_pdf
         layout = config.get("report", {}).get("pdf_layout", "overview")
         outputs = []
         if layout in {"overview", "both"}:
+            progress(90, 100, f"產生測試 PDF：{delivery / 'report_by_test.pdf'}")
             path = build_pdf(delivery / "report_by_test.pdf", manifest, config, delivery, "overview")
             outputs.append(path)
         if layout in {"run", "both"}:
+            progress(94, 100, f"產生航次 PDF：{delivery / 'report_by_run.pdf'}")
             path = build_pdf(delivery / "report_by_run.pdf", manifest, config, delivery, "run")
             outputs.append(path)
         pdf_cache = delivery / "internal" / "pdf_images"
+        progress(98, 100, f"清理 PDF 暫存目錄：{pdf_cache}")
         if pdf_cache.exists():
             shutil.rmtree(pdf_cache)
         return {"delivery_dir": delivery, "index_html": delivery / "index.html", "pdfs": outputs,

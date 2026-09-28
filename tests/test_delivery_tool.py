@@ -175,6 +175,42 @@ class DeliveryFixture(unittest.TestCase):
         result = validate_config(self.config)
         self.assertTrue(any(e["code"] == "project_event_mismatch" for e in result["errors"]))
 
+    def test_build_failure_keeps_traceback_and_stage_after_package_cleanup(self):
+        from unittest.mock import patch
+        from delivery_tool.builder import build
+        failure = OSError("[WinError 3] 系統找不到指定的路徑。")
+        failure.winerror = 3
+        updates = []
+        self.config["report"]["pdf_layout"] = "none"
+        with patch("delivery_tool.builder.write_html", side_effect=failure):
+            with self.assertRaises(ValueError) as caught:
+                build(self.config, progress=lambda done, total, message: updates.append(done / total))
+        text = str(caught.exception)
+        self.assertIn("失敗階段：產生 HTML", text)
+        self.assertIn("index.html", text)
+        self.assertIn("完整 traceback", text)
+        self.assertIn("winerror：3", text)
+        output = Path(self.config["output_dir"])
+        logs = list(output.glob("delivery_error_*.txt"))
+        self.assertEqual(len(logs), 1)
+        self.assertIn("write_html", logs[0].read_text(encoding="utf-8"))
+        self.assertFalse(any(path.is_dir() for path in output.iterdir()))
+        self.assertLess(max(updates), 1)
+
+    def test_failure_log_falls_back_to_temp_and_cancel_is_not_wrapped(self):
+        from unittest.mock import patch
+        from delivery_tool.builder import build
+        with patch("delivery_tool.builder._build", side_effect=OSError(3, "missing path", "missing/file")), \
+             patch("delivery_tool.builder.tempfile.gettempdir", return_value=str(self.root)):
+            with self.assertRaises(ValueError) as caught:
+                build(self.config)
+        self.assertIn("filename：missing/file", str(caught.exception))
+        self.assertEqual(len(list(self.root.glob("delivery_error_*.txt"))), 1)
+        with patch("delivery_tool.builder._build", side_effect=InterruptedError("已取消")):
+            with self.assertRaises(InterruptedError):
+                build(self.config)
+        self.assertEqual(len(list(self.root.glob("delivery_error_*.txt"))), 1)
+
     def test_project_video_survives_missing_or_different_pairing_ids(self):
         import cv2
         from delivery_tool.builder import _video_package_plan, _package_assets
@@ -274,7 +310,11 @@ class DeliveryFixture(unittest.TestCase):
             "opacity": 0.4,
             "colors": {"overlap": "#123456", "gt_only": "#654321", "prediction_only": "#00AABB"},
         }
-        result = build(self.config)
+        updates = []
+        result = build(self.config, progress=lambda done, total, message: updates.append((done / total, message)))
+        self.assertEqual(updates[-1][0], 1)
+        self.assertTrue(all(value < 1 for value, _ in updates[:-1]))
+        self.assertEqual([value for value, _ in updates], sorted(value for value, _ in updates))
         self.assertEqual(len(result["pdfs"]), 2)
         self.assertTrue((result["delivery_dir"] / "index.html").is_file())
         self.assertTrue((result["delivery_dir"] / "result_summary.csv").is_file())
