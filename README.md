@@ -261,6 +261,8 @@ The three `report.pdf_layout` choices are `overview`, `run`, and `both`. The Win
 
 Every output is written to a unique `delivery_<timestamp>_<id>` directory. `internal/result_manifest.json` is the shared data source for HTML, PDF, and CSV. Bundled assets are relative to that directory so the package can be moved. Videos are not copied unless **將唯一配對影片複製到交付包** is enabled.
 
+When video packaging is enabled, `video_filename_template` controls the complete video filename stem (the source extension is added automatically). The default is `Camera{camera}_Test{test}_{run}_{date:%y%m%d}`, which yields `Camera1_Test1_A_260922.mp4` for Camera 1, Test 1, run A on 2026-09-22. Available fields are `{camera}`, `{test}`, `{run}`, and `{date:...}` using Python `strftime` directives, for example `{date:%Y-%m-%d}`. Values come from the paired camera and voyage metadata; keyframe phase, event, frame, distance, and trailing notes do not enter the video name. The desktop app shows a live example. Before packaging, the builder checks the template, required paired values, Windows filename rules, and collisions between different source videos. A conflicting name stops the build without replacing a video. Repeated events that point to the same source video share one packaged copy. The event records and frame-sequence player both link to the resulting relative video path. Existing delivery folders are not renamed.
+
 ## HTML 航次明細與逐幀圖表
 
 HTML 事件卡片的 **查看航次分析** 會開啟航次明細；Project 完整性清單也能開啟尚未評估的分析項目。明細依相機顯示 First／Stable Collage 與評估指標，一次查看一台相機的 Raw、Rolling、Stable 曲線。Frame 範圍可完整查看、手動指定或依事件前後秒數定位，也可用滾輪縮放、拖曳平移、單擊固定 Frame。逐幀資料以游標直接查原值；畫面降採樣只影響繪圖，短脈衝仍會保留。

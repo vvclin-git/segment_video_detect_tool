@@ -12,6 +12,7 @@
   "video_root": "",
   "output_dir": "deliveries",
   "include_videos": false,
+  "video_filename_template": "Camera{camera}_Test{test}_{run}_{date:%y%m%d}",
   "include_frame_charts": true,
   "project_assets_roots": {},
   "pairing_run_id_map": {},

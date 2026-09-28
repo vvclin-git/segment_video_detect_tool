@@ -14,6 +14,8 @@ from .collage import copy_keyframe, render_collage
 from .config import comparison_overlay_settings, resolve_path
 from .dataset import validate_config
 from .exporters import write_csv, write_html
+from .video_naming import (DEFAULT_VIDEO_FILENAME_TEMPLATE, paired_video_filename_values,
+                           render_video_filename_stem, validate_video_filename_template)
 
 
 def _safe_name(value: str) -> str:
@@ -83,10 +85,99 @@ def _copy_source(source: Path, output: Path, root: Path, day: str) -> str:
     return target.relative_to(output).as_posix()
 
 
-def _package_assets(result: dict, output: Path, pairings: list, config: dict, progress=None, cancel=None):
+def _video_package_plan(result: dict, pairings: list, config: dict) -> dict:
+    """Resolve every packaged video name before creating the delivery directory."""
+    plan = {"sources": {}, "source_paths": {}, "record_paths": {}, "sequence_paths": {}}
+    template = config.get("video_filename_template", DEFAULT_VIDEO_FILENAME_TEMPLATE)
+    try:
+        fields = validate_video_filename_template(template)
+    except ValueError as exc:
+        result["errors"].append({"code": "invalid_video_filename_template", "key": "video_filename_template",
+                                 "message": str(exc)})
+        return plan
+    if not config.get("include_videos"):
+        return plan
+
+    owners = {}
+    manifest = result["manifest"]
+    records = manifest.get("records", [])
+    records_by_sequence = {record.get("analysis_link", {}).get("sequence_id"): record
+                           for record in records if record.get("analysis_link", {}).get("sequence_id")}
+
+    def add_video(record: dict, source: Path, *, record_key: str = "", sequence_id: str = ""):
+        identity = str(source.resolve()).casefold()
+        relative = plan["source_paths"].get(identity)
+        if relative is None:
+            values = paired_video_filename_values(record, pairings, source)
+            missing = sorted(field for field in fields if not values.get(field))
+            if missing:
+                result["errors"].append({
+                    "code": "missing_video_filename_data",
+                    "key": record_key or sequence_id,
+                    "message": f"影片 {source.name} 缺少配對命名資料：{', '.join(missing)}",
+                })
+                return
+            try:
+                stem = render_video_filename_stem(template, values)
+            except ValueError as exc:
+                result["errors"].append({"code": "invalid_video_filename", "key": record_key or sequence_id,
+                                         "message": f"影片 {source.name}：{exc}"})
+                return
+            date_folder = values["date"].isoformat() if values.get("date") else "unknown_date"
+            relative = (Path("videos") / date_folder / f"{stem}{source.suffix}").as_posix()
+            target_key = relative.casefold()
+            owner = owners.get(target_key)
+            if owner and owner != identity:
+                result["errors"].append({
+                    "code": "video_filename_conflict",
+                    "key": record_key or sequence_id,
+                    "message": f"不同來源影片 {owner} 與 {source.name} 產生相同檔名：{relative}",
+                })
+                return
+            owners[target_key] = identity
+            plan["sources"][identity] = source
+            plan["source_paths"][identity] = relative
+        if record_key:
+            plan["record_paths"][record_key] = relative
+        if sequence_id:
+            plan["sequence_paths"][sequence_id] = relative
+
+    for record in records:
+        source = Path(record.get("video_source_path", "")) if record.get("video_source_path") else None
+        if not source or not source.is_file():
+            source = _video_for_record(record, pairings, config, result["errors"], result["warnings"])
+        if source:
+            add_video(record, source, record_key=str(record.get("key", "")))
+
+    for sequence in manifest.get("analysis_sequences", []):
+        sid = str(sequence.get("sequence_id", ""))
+        linked_record = records_by_sequence.get(sid)
+        if linked_record:
+            plan["sequence_paths"][sid] = plan["record_paths"].get(str(linked_record.get("key", "")), "")
+            continue
+        surrogate = {"key": sid, "camera": sequence.get("camera", ""),
+                     "analysis_link": {"pairing_run_id": sequence.get("pairing_run_id", "")},
+                     "parsed": {"run_id": sequence.get("pairing_run_id", "")}}
+        source = _video_for_record(surrogate, pairings, config, result["errors"], result["warnings"])
+        if source:
+            add_video(surrogate, source, sequence_id=sid)
+    return plan
+
+
+def _copy_video(source: Path, output: Path, relative: str):
+    target = output / Path(relative)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+def _package_assets(result: dict, output: Path, pairings: list, config: dict, video_plan: dict,
+                    progress=None, cancel=None):
     manifest = result["manifest"]
     errors, warnings = result["errors"], result["warnings"]
-    copied_videos: dict[str, str] = {}
+    for identity, source in video_plan.get("sources", {}).items():
+        if cancel and cancel.is_set():
+            raise InterruptedError("已取消")
+        _copy_video(source, output, video_plan["source_paths"][identity])
     records = manifest["records"]
     for index, record in enumerate(records):
         if cancel and cancel.is_set():
@@ -115,14 +206,7 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, pr
                 attachment[field] = ""
 
         if config.get("include_videos"):
-            video = _video_for_record(record, pairings, config, errors, warnings)
-            if video:
-                identity = str(video.resolve()).casefold()
-                if identity not in copied_videos:
-                    copied_videos[identity] = _copy_source(video, output, Path("videos"), record.get("date", ""))
-                record["video"] = copied_videos[identity]
-            else:
-                record["video"] = ""
+            record["video"] = video_plan.get("record_paths", {}).get(str(record.get("key", "")), "")
         else:
             record["video"] = ""
 
@@ -138,8 +222,6 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, pr
         record["analysis_link"]["project_path"] = Path(record.get("analysis_link", {}).get("project_path", "")).name
         if progress:
             progress(index + 1, len(records), f"整理交付附件：{record.get('filename', '')}")
-    sequence_records = {record.get("analysis_link", {}).get("sequence_id"): record for record in records
-                        if record.get("analysis_link", {}).get("sequence_id")}
     for sequence in manifest.get("analysis_sequences", []):
         if cancel and cancel.is_set():
             raise InterruptedError("已取消")
@@ -165,17 +247,9 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, pr
                               f"window.__SEA_TRIAL_FRAME_DATA__[{json.dumps(sid)}]={serialized};", encoding="utf-8")
             sequence["data_path"] = relative.as_posix()
         if config.get("include_videos"):
-            linked_record = sequence_records.get(sid)
-            surrogate = {"key": sid, "camera": sequence.get("camera", ""),
-                         "analysis_link": {"pairing_run_id": sequence.get("pairing_run_id", "")},
-                         "parsed": {"run_id": sequence.get("pairing_run_id", "")}}
-            video = _video_for_record(linked_record or surrogate, pairings, config, errors, warnings)
-            if video:
-                identity = str(video.resolve()).casefold()
-                if identity not in copied_videos:
-                    date = (linked_record or {}).get("date", "")
-                    copied_videos[identity] = _copy_source(video, output, Path("videos"), date)
-                sequence["video"] = copied_videos[identity]
+            relative_video = video_plan.get("sequence_paths", {}).get(sid, "")
+            if relative_video:
+                sequence["video"] = relative_video
             else:
                 sequence["video_reason"] = "沒有唯一且可讀取的配對影片；圖表仍可使用。"
         else:
@@ -202,12 +276,16 @@ def _write_validation(path: Path, result: dict):
 def build(config: dict, *, progress=None, cancel: threading.Event | None = None) -> dict:
     cancel = cancel or threading.Event()
     config = copy.deepcopy(config)
+    config.setdefault("video_filename_template", DEFAULT_VIDEO_FILENAME_TEMPLATE)
     config.setdefault("report", {})["comparison_overlay"] = comparison_overlay_settings(config)
     result = validate_config(config, progress=progress, cancel=cancel)
     if not result["ok"]:
         raise ValueError(json.dumps({"errors": result["errors"], "warnings": result["warnings"]}, ensure_ascii=False, indent=2))
     if cancel.is_set():
         raise InterruptedError("已取消")
+    video_plan = _video_package_plan(result, result["pairings"], config)
+    if result["errors"]:
+        raise ValueError(json.dumps({"errors": result["errors"], "warnings": result["warnings"]}, ensure_ascii=False, indent=2))
     parent = resolve_path(config, config.get("output_dir"))
     if parent is None:
         raise ValueError("請設定 output_dir")
@@ -225,7 +303,7 @@ def build(config: dict, *, progress=None, cancel: threading.Event | None = None)
              "status": sequence.get("status"), "source_path": sequence.get("_source_path", ""),
              "source_candidates": sequence.get("_source_candidates", [])}
             for sequence in result["manifest"].get("analysis_sequences", [])]
-        manifest = _package_assets(result, delivery, result["pairings"], config, progress, cancel)
+        manifest = _package_assets(result, delivery, result["pairings"], config, video_plan, progress, cancel)
         # Optional video pairing can add validation findings after the initial pass.
         manifest["validation"] = {"errors": result["errors"], "warnings": result["warnings"]}
         if result["errors"]:

@@ -5,6 +5,7 @@ import json
 import queue
 import threading
 import webbrowser
+from datetime import date
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, W, X, Y, BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
 
@@ -13,6 +14,7 @@ from PIL import Image, ImageTk
 from .builder import build
 from .config import DEFAULT_CONFIG, comparison_overlay_settings, load_config, save_config
 from .dataset import validate_config
+from .video_naming import render_video_filename_stem
 
 
 class ZoomableImage:
@@ -148,6 +150,22 @@ class DeliveryApp:
         ttk.Button(asset_actions, text="清除所選根目錄", command=self._clear_project_assets_root).pack(side=LEFT, padx=7)
         self._entry_row(form, "test_dates", "測試日期（逗號分隔，如 2026-09-18）")
         self._entry_row(form, "batch_id", "批次識別")
+        video_settings = ttk.LabelFrame(form, text="影片交付設定", padding=8); video_settings.pack(fill=X, pady=4)
+        self.values["include_videos"] = BooleanVar(value=False)
+        ttk.Checkbutton(video_settings, text="將唯一配對影片複製到交付包",
+                        variable=self.values["include_videos"]).pack(anchor=W)
+        template_row = ttk.Frame(video_settings); template_row.pack(fill=X, pady=(5, 2))
+        ttk.Label(template_row, text="影片檔名範本", width=26).pack(side=LEFT)
+        self.values["video_filename_template"] = StringVar(value=DEFAULT_CONFIG["video_filename_template"])
+        ttk.Entry(template_row, textvariable=self.values["video_filename_template"]).pack(side=LEFT, fill=X, expand=True)
+        preview_row = ttk.Frame(video_settings); preview_row.pack(fill=X, pady=(3, 0))
+        ttk.Label(preview_row, text="即時範例", width=26).pack(side=LEFT)
+        self.video_filename_preview = StringVar(value="")
+        ttk.Label(preview_row, textvariable=self.video_filename_preview).pack(side=LEFT)
+        ttk.Label(video_settings, text="欄位：{camera}、{test}、{run}、{date:日期格式}；副檔名沿用來源影片。",
+                  foreground="#52636a").pack(anchor=W, pady=(3, 0))
+        self.values["video_filename_template"].trace_add("write", lambda *_: self._refresh_video_filename_preview())
+        self._refresh_video_filename_preview()
         ttk.Separator(form).pack(fill=X, pady=9)
         report = ttk.LabelFrame(form, text="報告設定", padding=8); report.pack(fill=X, pady=4)
         row = ttk.Frame(report); row.pack(fill=X, pady=2)
@@ -171,8 +189,6 @@ class DeliveryApp:
             swatch.pack(side=LEFT, padx=3)
             self.overlay_swatch_labels.append(swatch)
         self._refresh_overlay_summary()
-        self.values["include_videos"] = BooleanVar(value=False)
-        ttk.Checkbutton(report, text="將唯一配對影片複製到交付包", variable=self.values["include_videos"]).pack(anchor=W)
         self.values["include_frame_charts"] = BooleanVar(value=True)
         ttk.Checkbutton(report, text="在 HTML 加入逐幀分析圖表", variable=self.values["include_frame_charts"]).pack(anchor=W)
         self.values["cover"] = BooleanVar(value=True); self.values["summary_table"] = BooleanVar(value=True)
@@ -215,6 +231,16 @@ class DeliveryApp:
         self.overlay_summary_text.set(f"疊圖不透明度：{round(settings['opacity'] * 100)}%{suffix}")
         for label, key in zip(self.overlay_swatch_labels, ("overlap", "gt_only", "prediction_only")):
             label.configure(background=settings["colors"][key], foreground="#101820")
+
+    def _refresh_video_filename_preview(self):
+        template = self.values["video_filename_template"].get()
+        try:
+            stem = render_video_filename_stem(template, {
+                "camera": "1", "test": "1", "run": "A", "date": date(2026, 9, 22),
+            })
+            self.video_filename_preview.set(f"{stem}.mp4")
+        except ValueError as exc:
+            self.video_filename_preview.set(f"範本錯誤：{exc}")
 
     def _path_row(self, parent, key, label, kind, report=False):
         row = ttk.Frame(parent); row.pack(fill=X, pady=2)
@@ -313,6 +339,7 @@ class DeliveryApp:
                 self.values[key].set(str(config.get(key) or ""))
             self.values["test_dates"].set(",".join(config.get("test_dates", [])))
             self.values["batch_id"].set(str(config.get("batch_id", "")))
+            self.values["video_filename_template"].set(str(config.get("video_filename_template", DEFAULT_CONFIG["video_filename_template"])))
             report = config.get("report", {})
             self.comparison_overlay = comparison_overlay_settings(config)
             self.config_dirty = False
@@ -340,6 +367,7 @@ class DeliveryApp:
         config["test_dates"] = [x.strip() for x in self.values["test_dates"].get().split(",") if x.strip()]
         config["batch_id"] = self.values["batch_id"].get().strip()
         config["include_videos"] = bool(self.values["include_videos"].get())
+        config["video_filename_template"] = self.values["video_filename_template"].get()
         config["include_frame_charts"] = bool(self.values["include_frame_charts"].get())
         config["project_assets_roots"] = dict(self.project_assets_roots)
         config["report"].update({key: self.values[key].get().strip() for key in

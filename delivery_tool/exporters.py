@@ -16,7 +16,7 @@ def _safe_json(value: object) -> str:
 def write_csv(path: Path, manifest: dict) -> Path:
     fields = ["date", "batch_id", "camera", "test", "run_letter", "phase", "event", "frame", "mIoU",
               "mIoU_source", "distance_m", "filename_distance_m", "nominal_time_s", "analysis_item_id",
-              "analysis_link_status", "event_sources", "collage", "image", "labelme", "mask", "evaluation_status"]
+              "analysis_link_status", "event_sources", "collage", "image", "video", "labelme", "mask", "evaluation_status"]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8-sig") as output:
         writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")

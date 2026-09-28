@@ -5,6 +5,8 @@ import math
 import re
 from pathlib import Path
 
+from .video_naming import DEFAULT_VIDEO_FILENAME_TEMPLATE
+
 
 DEFAULT_CONFIG = {
     "schema_version": 1,
@@ -20,6 +22,7 @@ DEFAULT_CONFIG = {
     "video_root": "",
     "output_dir": "",
     "include_videos": False,
+    "video_filename_template": DEFAULT_VIDEO_FILENAME_TEMPLATE,
     "include_frame_charts": True,
     "project_assets_roots": {},
     "pairing_run_id_map": {},

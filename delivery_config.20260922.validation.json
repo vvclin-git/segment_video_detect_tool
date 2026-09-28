@@ -12,6 +12,7 @@
   "video_root": "C:/Workplace/segmet_video_detect_tool_data/run_data/60度",
   "output_dir": "C:/Workplace/segment_video_detect_tool/deliveries/2026-09-22-frame-chart-validation",
   "include_videos": true,
+  "video_filename_template": "Camera{camera}_Test{test}_{run}_{date:%y%m%d}",
   "include_frame_charts": true,
   "project_assets_roots": {
     "f6ef21ba3b4947cfb0816c90d19121d6": "C:/Workplace/segmet_video_detect_tool_data/run_data/analysis_project_60.assets"
