@@ -161,7 +161,7 @@ class FrameSourceTest(unittest.TestCase):
                   "analysis_frames": {sequence["sequence_id"]: rows}, "errors": [], "warnings": []}
         out = self.root / "delivery"
         out.mkdir()
-        _package_assets(result, out, [], {"include_videos":False})
+        _package_assets(result, out, [], {"include_videos":False}, {"sources": {}, "source_paths": {}})
         scripts = list((out / "analysis").glob("*.js"))
         self.assertEqual(len(scripts), 1)
         text = scripts[0].read_text(encoding="utf-8")

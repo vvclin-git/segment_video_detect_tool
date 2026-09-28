@@ -278,7 +278,7 @@ def video_search_message(reason: str, config: dict, run_id, camera, raw_paths: l
     return "；".join([
         reason, f"航次 ID={run_id or '（無）'}", f"相機={camera or '（無）'}",
         f"查找檔名={', '.join(names) or '（尚未取得）'}",
-        f"Pairing 原始路徑={', '.join(raw_paths) or '（無對應路徑）'}",
+        f"來源原始路徑={', '.join(raw_paths) or '（無對應路徑）'}",
         f"影片根目錄={root_text}（{root_state}）",
         "搜尋規則=根目錄及所有子資料夾，完整檔名含副檔名，不分大小寫",
         f"原始路徑直接檢查={', '.join(direct) or '（無）'}",
@@ -286,11 +286,10 @@ def video_search_message(reason: str, config: dict, run_id, camera, raw_paths: l
     ])
 
 
-def _video_metadata(record: dict, pairings: list, config: dict, errors: list, warnings: list) -> dict:
-    """Resolve an exact paired video and inspect its reported frame range without decoding it."""
-    root = resolve_path(config, config.get("video_root"))
-    include = bool(config.get("include_videos"))
-    run_id = (record.get("analysis_link") or {}).get("pairing_run_id") or record.get("parsed", {}).get("run_id") or _pairing_id_for(record["parsed"], config)
+def video_source_paths(record: dict, pairings: list, config: dict) -> tuple:
+    """Use only a confirmed project link; never guess a video from an unrelated run."""
+    link = record.get("analysis_link") or {}
+    run_id = link.get("pairing_run_id") or record.get("parsed", {}).get("run_id") or _pairing_id_for(record.get("parsed", {}), config)
     raw_paths = []
     for pair in pairings:
         run = pair["run"]
@@ -300,17 +299,40 @@ def _video_metadata(record: dict, pairings: list, config: dict, errors: list, wa
                 if match and match.get("path") and (camera_name == record.get("camera") or camera_name.endswith(str(record.get("camera", ""))[-1:])):
                     raw_paths.append(str(match["path"]))
     raw_paths = list(dict.fromkeys(raw_paths))
+    project_source = link.get("video_path") if link.get("status") == "linked" else ""
+    origin = "Pairing cameraMatches.path"
+    conflict = False
+    if project_source:
+        origin = f"analysis_project.json items[].path（專案={link.get('project_path', '')}，項目={link.get('item_id', '')}）"
+        project_source = str(project_source)
+        project_name = Path(project_source.replace("\\", "/")).name.casefold()
+        conflict = any(Path(p.replace("\\", "/")).name.casefold() != project_name for p in raw_paths)
+        if conflict or len(raw_paths) > 1:
+            raw_paths = list(dict.fromkeys([project_source, *raw_paths]))
+        else:
+            raw_paths = [project_source]
+    return run_id, raw_paths, origin, conflict
+
+
+def _video_metadata(record: dict, pairings: list, config: dict, errors: list, warnings: list) -> dict:
+    """Resolve a confirmed project or paired video and inspect metadata without decoding."""
+    root = resolve_path(config, config.get("video_root"))
+    include = bool(config.get("include_videos"))
+    run_id, raw_paths, origin, conflict = video_source_paths(record, pairings, config)
     def report(code, reason, candidates=None, target=None):
         (warnings if target is None else target).append({
             "code": code, "key": record["key"],
-            "message": video_search_message(reason, config, run_id, record.get("camera"), raw_paths, candidates),
+            "message": video_search_message(f"{reason}；來源={origin}", config, run_id, record.get("camera"), raw_paths, candidates),
         })
 
+    if conflict:
+        report("video_source_conflict", "分析專案與 Pairing 的影片檔名不一致，停止配對", target=errors)
+        return {"status": "ambiguous", "path": "", "fps": None, "frame_count": None}
     if len(raw_paths) > 1:
         target = errors if include else warnings
         report("video_pairing_ambiguous", "Pairing 中此航次／相機有多個影片來源，未搜尋", target=target)
         return {"status": "ambiguous", "path": "", "fps": None, "frame_count": None}
-    if not root and not include:
+    if not root and not include and not origin.startswith("analysis_project"):
         report("video_source_unverified", "未設定影片根目錄且未啟用影片交付，因此未搜尋影片；Pairing 的 FPS／時長仍可用於名目核對")
         # Pairing snapshots still carry reported FPS/duration when the source videos are not supplied.
         run_row = next((row for row in pairings if str(row["run"].get("id", "")) == str(run_id)), None)
@@ -478,8 +500,10 @@ def _link_project(record: dict, project_rows: list, pairing_rows: list, config: 
         exact = [row for row in identity_candidates if any(e["event"] == parsed.get("event") and e["frame"] == parsed.get("frame")
                                                             for e in _project_events(row["item"]))]
         if len(exact) == 1:
+            chosen_item_id = str(exact[0]["item"].get("id", ""))
             run_id = str(exact[0]["item"].get("pairing_run_id", exact[0]["item"].get("segment", "")))
         elif len(identity_candidates) == 1:
+            chosen_item_id = str(identity_candidates[0]["item"].get("id", ""))
             run_id = str(identity_candidates[0]["item"].get("pairing_run_id", identity_candidates[0]["item"].get("segment", "")))
         elif len(identity_candidates) > 1:
             errors.append({"code": "project_ambiguous", "key": record["key"],
@@ -528,7 +552,16 @@ def _link_project(record: dict, project_rows: list, pairing_rows: list, config: 
             "sequence_id": sequence_id(str(row.get("project_id", "")), str(item.get("id", "")),
                                         str((item.get("latest_run") or {}).get("run_id", ""))),
             "project_path": row["project_path"], "event_sources": sources,
+            **project_video_link(row),
             "fps": fps, "frame_count": frame_count}
+
+
+def project_video_link(row: dict) -> dict:
+    item = row["item"]
+    source = str(item.get("path") or "")
+    if source and not Path(source).is_absolute():
+        source = str((Path(row["project_path"]).parent / source).resolve())
+    return {"video_path": source, "video_pairing_run": item.get("pairing_run") or {}}
 
 
 def _validate_attachments(record: dict, attachment: dict, image_path: Path | None, errors: list, warnings: list):
@@ -673,6 +706,10 @@ def validate_config(config: dict, *, progress=None, cancel=None) -> dict:
     sequence_rows = {}
     for row in project_rows:
         sequence, frame_rows = build_analysis_sequence(row, config)
+        sequence["_video_link"] = {"status": "linked", "item_id": row["item"].get("id", ""),
+                                   "project_path": row["project_path"],
+                                   "pairing_run_id": sequence.get("pairing_run_id", ""),
+                                   **project_video_link(row)}
         sid = sequence["sequence_id"]
         # Duplicate project/item/run identities refer to the same immutable analysis.
         if sid not in sequences_by_id:

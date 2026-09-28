@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .collage import copy_keyframe, render_collage
 from .config import comparison_overlay_settings, resolve_path
-from .dataset import validate_config, video_search_message
+from .dataset import validate_config, video_search_message, video_source_paths
 from .exporters import write_csv, write_html
 from .video_naming import (DEFAULT_VIDEO_FILENAME_TEMPLATE, paired_video_filename_values,
                            render_video_filename_stem, validate_video_filename_template)
@@ -34,27 +34,15 @@ def _video_for_record(record: dict, pairings: list, config: dict, errors: list, 
     source = Path(record.get("video_source_path", "")) if record.get("video_source_path") else None
     if source and source.is_file():
         return source
-    run_id = str(record.get("analysis_link", {}).get("pairing_run_id") or record.get("parsed", {}).get("run_id") or "")
-    if not run_id:
-        warnings.append({"code": "missing_video", "key": record["key"], "message": video_search_message(
-            "未取得航次 ID，無法查找交付影片", config, run_id, record.get("camera"), [])})
-        return None
+    run_id, paths, origin, conflict = video_source_paths(record, pairings, config)
     camera = str(record.get("camera", ""))
-    paths = []
-    for pair in pairings:
-        run = pair["run"]
-        if str(run.get("id", "")) != run_id:
-            continue
-        matches = run.get("cameraMatches") or {}
-        for camera_id, match in matches.items():
-            if not match or not match.get("path"):
-                continue
-            label = pair.get("cameras", {}).get(str(camera_id), str(camera_id))
-            if label == camera or str(label).endswith(camera[-1:]):
-                paths.append(str(match["path"]))
+    if conflict:
+        errors.append({"code": "video_source_conflict", "key": record["key"], "message": video_search_message(
+            f"分析專案與 Pairing 的影片檔名不一致；來源={origin}", config, run_id, camera, paths)})
+        return None
     if not paths:
         warnings.append({"code": "missing_video", "key": record["key"], "message": video_search_message(
-            "Pairing 沒有此航次／相機的影片路徑，無法查找交付影片", config, run_id, camera, [])})
+            f"沒有此航次／相機的影片路徑，無法查找交付影片；來源={origin}", config, run_id, camera, [])})
         return None
     if len(set(paths)) > 1:
         errors.append({"code": "video_pairing_ambiguous", "key": record["key"], "message": video_search_message(
@@ -79,7 +67,7 @@ def _video_for_record(record: dict, pairings: list, config: dict, errors: list, 
             f"影片 {basename} 有 {len(candidates)} 個候選", config, run_id, camera, paths, candidates)})
     elif config.get("include_videos"):
         warnings.append({"code": "missing_video", "key": record["key"], "message": video_search_message(
-            f"找不到配對影片 {basename}；影片未打包", config, run_id, camera, paths, candidates)})
+            f"找不到配對影片 {basename}；影片未打包；來源={origin}", config, run_id, camera, paths, candidates)})
     return None
 
 
@@ -163,7 +151,7 @@ def _video_package_plan(result: dict, pairings: list, config: dict) -> dict:
             plan["sequence_paths"][sid] = plan["record_paths"].get(str(linked_record.get("key", "")), "")
             continue
         surrogate = {"key": sid, "camera": sequence.get("camera", ""),
-                     "analysis_link": {"pairing_run_id": sequence.get("pairing_run_id", "")},
+                     "analysis_link": sequence.get("_video_link") or {"pairing_run_id": sequence.get("pairing_run_id", "")},
                      "parsed": {"run_id": sequence.get("pairing_run_id", "")}}
         source = _video_for_record(surrogate, pairings, config, result["errors"], result["warnings"])
         if source:
@@ -266,6 +254,7 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, vi
             sequence["video_reason"] = "設定未啟用影片打包；圖表仍可使用。"
         # Machine-specific source paths are retained in the internal validation report only.
         sequence.pop("_source_path", None)
+        sequence.pop("_video_link", None)
         sequence.pop("_source_candidates", None)
         sequence.pop("source_name", None)
         if progress:

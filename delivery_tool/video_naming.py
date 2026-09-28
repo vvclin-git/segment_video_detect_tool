@@ -98,9 +98,14 @@ def paired_video_filename_values(record: dict, pairings: list, source=None) -> d
     if source_candidates:
         candidates = source_candidates
     elif source_name and not run_id:
-        return {}
+        candidates = []
     if not candidates:
-        return {}
+        # A confirmed analysis item retains its original voyage context even when
+        # the external Pairing snapshot is absent or uses different run IDs.
+        embedded_run = analysis_link.get("video_pairing_run")
+        if analysis_link.get("status") != "linked" or not embedded_run:
+            return {}
+        candidates = [(embedded_run, camera, camera)]
 
     def context(candidate):
         run, camera_name, camera_id = candidate

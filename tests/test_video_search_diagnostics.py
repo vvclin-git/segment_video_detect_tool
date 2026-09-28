@@ -7,6 +7,25 @@ from delivery_tool.builder import _video_for_record
 
 
 class VideoSearchDiagnosticsTests(unittest.TestCase):
+    def test_project_conflicts_and_unconfirmed_links_do_not_select_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = {"key": "event", "camera": "Camera 1", "parsed": {}, "analysis_link": {
+                "status": "linked", "pairing_run_id": "run1", "video_path": str(root / "project.mp4")}}
+            pairings = [{"run": {"id": "run1", "cameraMatches": {"cam1": {"path": str(root / "other.mp4")}}},
+                         "cameras": {"cam1": "Camera 1"}}]
+            errors, warnings = [], []
+            config = {"video_root": str(root), "include_videos": True}
+            result = _video_metadata(record, pairings, config, errors, warnings)
+            self.assertEqual(result["status"], "ambiguous")
+            self.assertEqual(errors[0]["code"], "video_source_conflict")
+            self.assertIsNone(_video_for_record(record, pairings, config, errors, warnings))
+            record["analysis_link"]["status"] = "mismatch"
+            warnings = []
+            result = _video_metadata(record, [], config, [], warnings)
+            self.assertEqual(result["status"], "source_unverified")
+            self.assertNotIn("project.mp4", warnings[0]["message"])
+
     def test_search_failures_explain_paths_and_keep_each_event(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

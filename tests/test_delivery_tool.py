@@ -175,6 +175,70 @@ class DeliveryFixture(unittest.TestCase):
         result = validate_config(self.config)
         self.assertTrue(any(e["code"] == "project_event_mismatch" for e in result["errors"]))
 
+    def test_project_video_survives_missing_or_different_pairing_ids(self):
+        import cv2
+        from delivery_tool.builder import _video_package_plan, _package_assets
+
+        videos = self.root / "honda_data" / "nested"
+        videos.mkdir(parents=True)
+        source = videos / "source.avi"
+        writer = cv2.VideoWriter(str(source), cv2.VideoWriter_fourcc(*"MJPG"), 30, (16, 16))
+        self.assertTrue(writer.isOpened())
+        try:
+            for _ in range(140):
+                writer.write(np.zeros((16, 16, 3), dtype=np.uint8))
+        finally:
+            writer.release()
+        settings = {**batch_core.DEFAULTS, "lower": list(batch_core.DEFAULTS["lower"]),
+                    "upper": list(batch_core.DEFAULTS["upper"])}
+        project = batch_core.new_project()
+        project["items"] = [{"id": "item-1", "settings": settings, "manual_events": {},
+            "path": str(self.root / "honda data" / "source.avi"),
+            "pairing_run_id": "old-run", "camera": "Camera 1", "status": "completed",
+            "pairing_run": {"angle": "A", "scenarioId": 1, "phase": "P1", "voyage": {"date": "2026-09-18"}},
+            "latest_run": {"settings": settings, "metadata": {"fps": 30, "frame_count": 140},
+                           "summary": {"first_detection_frame": 120}}}]
+        project_path = self.root / "project.json"
+        pair_path = self.root / "pairing.json"
+        pair_path.write_text(json.dumps({"cameras": [{"id": "cam1", "name": "Camera 1"}],
+            "runs": [{"id": "different-run", "cameraMatches": {"cam1": {"path": "unrelated.avi"}}}]}), encoding="utf-8")
+        self.config.update(projects=[str(project_path)], video_root=str(videos.parent), include_videos=True,
+                           include_frame_charts=False)
+        self.config["report"]["pdf_layout"] = "none"
+        for run_id, pairings in (("old-run", [str(pair_path)]), ("old-run", []), ("", [])):
+            with self.subTest(run_id=run_id, pairings=pairings):
+                project["items"][0]["pairing_run_id"] = run_id
+                project_path.write_text(json.dumps(project), encoding="utf-8")
+                self.config["pairings"] = pairings
+                result = validate_config(self.config)
+                record = result["manifest"]["records"][0]
+                self.assertEqual(record["analysis_link"]["status"], "linked")
+                self.assertEqual(record["video_status"], "verified")
+                self.assertEqual(Path(record["video_source_path"]), source)
+                self.assertFalse(any(w["code"] == "video_source_unverified" for w in result["warnings"]))
+                plan = _video_package_plan(result, result["pairings"], self.config)
+                self.assertEqual(result["errors"], [])
+                self.assertEqual(len(plan["sources"]), 1)
+        output = self.root / "package"
+        output.mkdir()
+        _package_assets(result, output, [], self.config, plan)
+        self.assertEqual((output / record["video"]).read_bytes(), source.read_bytes())
+        # Unassessed chart sequences must use the same project source, too.
+        import copy
+        sequence_result = validate_config(self.config)
+        sequence_result["manifest"]["records"] = []
+        sequence_plan = _video_package_plan(sequence_result, [], self.config)
+        self.assertEqual(sequence_result["errors"], [])
+        self.assertEqual(len(sequence_plan["sources"]), 1)
+        self.assertTrue(all(sequence_plan["sequence_paths"].values()))
+        from delivery_tool.dataset import _video_metadata
+        direct_record = copy.deepcopy(record)
+        direct_record["analysis_link"]["video_path"] = str(source)
+        warnings = []
+        direct = _video_metadata(direct_record, [], {"video_root": "", "include_videos": False}, [], warnings)
+        self.assertEqual(direct["status"], "verified")
+        self.assertEqual(warnings, [])
+
     def test_summary_table_does_not_add_blank_continuation_page(self):
         from delivery_tool.pdf_report import _draw_summary
 
