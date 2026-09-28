@@ -17,9 +17,8 @@
   const eventLabels = {
     FirstDetection: 'FirstDetection', StableStart: 'StableStart', StableConfirmation: 'StableConfirmation'
   };
-  const comparisonOverlay = DATA.comparison_overlay || {
-    mode: 'three_color_gt_prediction', opacity: 0.65,
-    colors: {overlap:'#1EEB5A', gt_only:'#FF282D', prediction_only:'#14D2FF'}
+  const comparisonColors = DATA.comparison_overlay?.colors || {
+    overlap:'#1EEB5A', gt_only:'#FF282D', prediction_only:'#14D2FF'
   };
 
   function unique(values) { return [...new Set(values.filter(value => value !== null && value !== undefined && value !== '').map(String))]; }
@@ -87,21 +86,6 @@
     ];
     panels.forEach(([label, path]) => {
       const panel = document.createElement('div'); panel.className = 'image-panel';
-      const title = document.createElement('div'); title.className = 'image-panel-title'; title.textContent = label; panel.append(title);
-      if (label === 'GT／預測比較') {
-        const legend = document.createElement('div'); legend.className = 'comparison-legend';
-        const entries = [
-          ['overlap', 'GT 與預測重疊'], ['gt_only', '僅 GT'], ['prediction_only', '僅預測']
-        ];
-        entries.forEach(([key, name]) => {
-          const item = document.createElement('span'); item.className = 'comparison-legend-item';
-          const swatch = document.createElement('i'); swatch.style.backgroundColor = comparisonOverlay.colors?.[key] || '#777777';
-          item.append(swatch, document.createTextNode(name)); legend.append(item);
-        });
-        const opacity = document.createElement('span'); opacity.className = 'comparison-opacity';
-        opacity.textContent = `疊圖不透明度：${Math.round(Number(comparisonOverlay.opacity ?? 0.65) * 100)}%`;
-        legend.append(opacity); panel.append(legend);
-      }
       if (path) {
         const link = document.createElement('a'); link.href = path; link.target = '_blank'; link.rel = 'noopener';
         link.title = `${label}：另開原始解析度圖片`; link.setAttribute('aria-label', link.title);
@@ -109,6 +93,23 @@
         link.append(image); panel.append(link);
       } else {
         const missing = document.createElement('div'); missing.className = 'missing-image'; missing.textContent = `未提供${label}`; panel.append(missing);
+      }
+      const title = document.createElement('div'); title.className = 'image-panel-title'; title.textContent = label; panel.append(title);
+      if (label === 'GT／預測比較') {
+        const counts = row.comparison_counts || {};
+        const entries = [
+          ['overlap', 'TP', counts.tp], ['gt_only', 'FN', counts.fn], ['prediction_only', 'FP', counts.fp]
+        ];
+        const legend = document.createElement('div'); legend.className = 'comparison-legend';
+        entries.forEach(([key, name, count]) => {
+          const item = document.createElement('span'); item.className = 'comparison-legend-item';
+          const swatch = document.createElement('i'); swatch.style.backgroundColor = comparisonColors[key] || '#777777';
+          const value = Number(count);
+          const shownCount = Number.isFinite(value) ? `${value.toLocaleString('zh-TW')} px` : '— px';
+          item.append(swatch, document.createTextNode(`${name} ${shownCount}`));
+          item.title = `${name}：${shownCount}`; legend.append(item);
+        });
+        panel.append(legend);
       }
       group.append(panel);
     });

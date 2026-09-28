@@ -98,14 +98,22 @@ def render_comparison_paths(image_path: str | Path, gt_path: str | Path, mask_pa
     return render_comparison(base, regions, settings)
 
 
-def _overlay(base: Image.Image, gt_path: Path, mask_path: Path, settings: dict | None = None) -> Image.Image:
+def _overlay(base: Image.Image, gt_path: Path, mask_path: Path, settings: dict | None = None,
+             pixel_counts: dict | None = None) -> Image.Image:
     base_array = np.asarray(base.convert("RGB")).copy()
     regions = comparison_regions(base_array, gt_path, mask_path)
+    if pixel_counts is not None:
+        pixel_counts.update({
+            "tp": int(np.count_nonzero(regions["overlap"])),
+            "fn": int(np.count_nonzero(regions["gt_only"])),
+            "fp": int(np.count_nonzero(regions["prediction_only"])),
+        })
     return render_comparison(base_array, regions, settings)
 
 
 def render_collage(record: dict, output: Path, *, overlay_output: Path | None = None,
-                   comparison_overlay: dict | None = None) -> Path | None:
+                   comparison_overlay: dict | None = None,
+                   pixel_counts: dict | None = None) -> Path | None:
     """Write the exact-range, side-by-side event collage. Source files are never changed."""
     if not record.get("image_path"):
         return None
@@ -118,7 +126,7 @@ def render_collage(record: dict, output: Path, *, overlay_output: Path | None = 
     complete = attachment.get("gt_status") == "valid" and attachment.get("mask_status") == "valid"
     # The right panel is deliberately a placeholder unless both aligned sources are valid.
     settings = comparison_overlay_settings(comparison_overlay)
-    right = _overlay(base, gt, mask, settings) if complete and gt and mask else None
+    right = _overlay(base, gt, mask, settings, pixel_counts=pixel_counts) if complete and gt and mask else None
     if right is not None and overlay_output is not None:
         overlay_output.parent.mkdir(parents=True, exist_ok=True)
         right.save(overlay_output, format="PNG")

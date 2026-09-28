@@ -190,8 +190,11 @@ def _package_assets(result: dict, output: Path, pairings: list, config: dict, vi
                                ("date", "test", "run_letter", "phase", "camera", "event", "frame"))
         collage_path = output / "collages" / (record.get("date") or "unknown_date") / f"{collage_key}.png"
         overlay_path = output / "overlays" / (record.get("date") or "unknown_date") / f"{collage_key}.png"
+        comparison_counts = {}
         generated = render_collage(record, collage_path, overlay_output=overlay_path,
-                                   comparison_overlay=config.get("report", {}).get("comparison_overlay"))
+                                   comparison_overlay=config.get("report", {}).get("comparison_overlay"),
+                                   pixel_counts=comparison_counts)
+        record["comparison_counts"] = comparison_counts
         record["overlay_image"] = overlay_path.relative_to(output).as_posix() if overlay_path.is_file() else ""
         record["collage"] = generated.relative_to(output).as_posix() if generated else ""
 

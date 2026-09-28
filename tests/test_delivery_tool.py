@@ -216,6 +216,9 @@ class DeliveryFixture(unittest.TestCase):
         self.assertTrue((result["delivery_dir"] / "result_summary.csv").is_file())
         manifest = json.loads(result["manifest"].read_text(encoding="utf-8"))
         record = manifest["records"][0]
+        self.assertEqual(record["comparison_counts"]["tp"], 3600)
+        self.assertGreater(record["comparison_counts"]["fn"], 0)
+        self.assertEqual(record["comparison_counts"]["fp"], 0)
         self.assertFalse(Path(record["image_path"]).is_absolute())
         self.assertFalse(Path(record["collage"]).is_absolute())
         self.assertFalse(Path(record["overlay_image"]).is_absolute())
@@ -231,8 +234,11 @@ class DeliveryFixture(unittest.TestCase):
         html = (result["delivery_dir"] / "index.html").read_text(encoding="utf-8")
         self.assertIn("#123456", html)
         report_js = (result["delivery_dir"] / "report.js").read_text(encoding="utf-8")
-        self.assertIn("GT 與預測重疊", report_js)
-        self.assertIn("疊圖不透明度", report_js)
+        self.assertIn("['overlap', 'TP', counts.tp]", report_js)
+        self.assertIn("['gt_only', 'FN', counts.fn]", report_js)
+        self.assertIn("['prediction_only', 'FP', counts.fp]", report_js)
+        self.assertNotIn("疊圖不透明度", report_js)
+        self.assertLess(report_js.index("link.append(image)"), report_js.index("panel.append(title)"))
 
         from delivery_tool.pdf_report import _draw_comparison_legend
 
