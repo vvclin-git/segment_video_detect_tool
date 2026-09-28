@@ -216,6 +216,7 @@ class DeliveryApp:
         self.comparison_preview_button = ttk.Button(result_actions, text="預覽 GT／預測比較",
                                                     command=self._preview_comparison, state="disabled")
         self.comparison_preview_button.pack(side=LEFT)
+        ttk.Button(result_actions, text="查看完整訊息", command=self._show_issue_details).pack(side=LEFT, padx=5)
         ttk.Label(result_actions, text="請先在下方選取一筆評估事件。", foreground="#60737c").pack(side=LEFT, padx=9)
         columns = ("level", "code", "key", "message")
         self.issue_tree = ttk.Treeview(issue_frame, columns=columns, show="headings", height=10)
@@ -224,6 +225,28 @@ class DeliveryApp:
         self.issue_tree.pack(side=LEFT, fill=BOTH, expand=True)
         sb = ttk.Scrollbar(issue_frame, orient="vertical", command=self.issue_tree.yview); sb.pack(side=RIGHT, fill=Y)
         self.issue_tree.configure(yscrollcommand=sb.set)
+        self.issue_tree.bind("<Double-1>", lambda _event: self._show_issue_details())
+
+    def _show_issue_details(self):
+        selected = self.issue_tree.selection()
+        if not selected:
+            messagebox.showinfo("查看完整訊息", "請先選取一筆檢查結果。", parent=self.root)
+            return
+        values = self.issue_tree.item(selected[0], "values")
+        content = "\n".join(f"{label}：{value}" for label, value in zip(
+            ("級別", "類型", "事件鍵", "說明"), values))
+        dialog = __import__("tkinter").Toplevel(self.root)
+        dialog.title("檢查結果完整訊息")
+        dialog.geometry("900x450")
+        from tkinter.scrolledtext import ScrolledText
+        text = ScrolledText(dialog, wrap="word", padx=10, pady=10)
+        text.pack(fill=BOTH, expand=True)
+        text.insert("1.0", content)
+        text.configure(state="disabled")
+        def copy_message():
+            dialog.clipboard_clear()
+            dialog.clipboard_append(content)
+        ttk.Button(dialog, text="複製完整訊息", command=copy_message).pack(pady=6)
 
     def _refresh_overlay_summary(self):
         settings = comparison_overlay_settings(self.comparison_overlay)

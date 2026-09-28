@@ -302,3 +302,9 @@ HTML 與 PDF Collage 依序顯示「原始影像／分割影像／GT／預測比
 Collage、獨立 `overlays/` PNG、HTML 與兩種 PDF 共用相同 RGB 比較圖。HTML 保留原圖、分割圖、比較圖各自的原尺寸連結；HTML 與 PDF 圖例會以實際色塊列出分類，並獨立標示「疊圖不透明度」，不代表信心分數。Manifest 的 `comparison_overlay` 與 `internal/build_config.json` 記錄實際渲染模式、顏色及不透明度。既有交付資料夾不會自動改寫；重新建置才會套用新規則。
 
 詳細預覽操作見 [GT／預測比較預覽操作](docs/comparison_overlay_preview.md)。
+
+### 影片搜尋問題診斷
+
+在「檢查結果與缺漏」選取影片警告後，按「查看完整訊息」或雙擊該列，再按「複製完整訊息」即可取得完整診斷。訊息包含事件鍵、航次 ID、相機、查找檔名、Pairing 原始路徑、解析後的影片根目錄與存在狀態、原始路徑檢查結果，以及同名候選檔案。各事件分別列出，不再只保留第一筆 `video_source_unverified`。
+
+搜尋會遞迴檢查影片根目錄下所有子資料夾，以完整檔名（含副檔名、不分大小寫）比對。沒有 Pairing 對應路徑、沒有符合航次／相機、未設定根目錄而略過搜尋、找不到檔案、同名檔案不唯一，以及找到影片但讀不到有效 FPS／總幀數，都會提供對應原因。交付包的 `internal/validation_report.json` 也會保留這些訊息。

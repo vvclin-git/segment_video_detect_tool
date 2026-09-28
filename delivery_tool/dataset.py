@@ -267,6 +267,25 @@ def _pairing_id_for(parsed: dict, config: dict) -> str:
     return next((str(mapping[key]) for key in keys if key in mapping and mapping[key]), "")
 
 
+def video_search_message(reason: str, config: dict, run_id, camera, raw_paths: list,
+                         candidates: list | None = None) -> str:
+    """Keep search evidence in the visible message as well as exported validation reports."""
+    root = resolve_path(config, config.get("video_root"))
+    root_text = str(root.resolve()) if root else "（未設定）"
+    root_state = "存在" if root and root.is_dir() else "未設定或不是可用資料夾"
+    names = list(dict.fromkeys(Path(p.replace("\\", "/")).name for p in raw_paths))
+    direct = [f"{Path(p).resolve()}（{'存在' if Path(p).is_file() else '不存在或不可讀'}）" for p in raw_paths]
+    return "；".join([
+        reason, f"航次 ID={run_id or '（無）'}", f"相機={camera or '（無）'}",
+        f"查找檔名={', '.join(names) or '（尚未取得）'}",
+        f"Pairing 原始路徑={', '.join(raw_paths) or '（無對應路徑）'}",
+        f"影片根目錄={root_text}（{root_state}）",
+        "搜尋規則=根目錄及所有子資料夾，完整檔名含副檔名，不分大小寫",
+        f"原始路徑直接檢查={', '.join(direct) or '（無）'}",
+        f"候選檔案={', '.join(map(str, candidates)) if candidates else '（無／尚未搜尋）'}",
+    ])
+
+
 def _video_metadata(record: dict, pairings: list, config: dict, errors: list, warnings: list) -> dict:
     """Resolve an exact paired video and inspect its reported frame range without decoding it."""
     root = resolve_path(config, config.get("video_root"))
@@ -281,11 +300,18 @@ def _video_metadata(record: dict, pairings: list, config: dict, errors: list, wa
                 if match and match.get("path") and (camera_name == record.get("camera") or camera_name.endswith(str(record.get("camera", ""))[-1:])):
                     raw_paths.append(str(match["path"]))
     raw_paths = list(dict.fromkeys(raw_paths))
+    def report(code, reason, candidates=None, target=None):
+        (warnings if target is None else target).append({
+            "code": code, "key": record["key"],
+            "message": video_search_message(reason, config, run_id, record.get("camera"), raw_paths, candidates),
+        })
+
     if len(raw_paths) > 1:
         target = errors if include else warnings
-        target.append({"code": "video_pairing_ambiguous", "key": record["key"], "message": "pairing 中此航次／相機有多個影片來源"})
+        report("video_pairing_ambiguous", "Pairing 中此航次／相機有多個影片來源，未搜尋", target=target)
         return {"status": "ambiguous", "path": "", "fps": None, "frame_count": None}
     if not root and not include:
+        report("video_source_unverified", "未設定影片根目錄且未啟用影片交付，因此未搜尋影片；Pairing 的 FPS／時長仍可用於名目核對")
         # Pairing snapshots still carry reported FPS/duration when the source videos are not supplied.
         run_row = next((row for row in pairings if str(row["run"].get("id", "")) == str(run_id)), None)
         match = None
@@ -305,6 +331,11 @@ def _video_metadata(record: dict, pairings: list, config: dict, errors: list, wa
                            "message": f"Frame {record['frame']} 超過 pairing 記錄影片長度推算的幀數 {frame_count}"})
         return {"status": "source_unverified", "path": "", "fps": fps, "frame_count": frame_count}
     if not raw_paths:
+        reason = ("沒有可讀取的 Pairing 航次資料" if not pairings else
+                  "未取得航次 ID" if not run_id else
+                  "Pairing 中找不到對應航次 ID" if not any(str(p["run"].get("id", "")) == str(run_id) for p in pairings) else
+                  "Pairing 中此航次沒有符合相機的影片 path")
+        report("video_source_unverified", reason + "，未取得查找檔名")
         return {"status": "source_unverified", "path": "", "fps": None, "frame_count": None}
     basename = Path(raw_paths[0].replace("\\", "/")).name
     candidates = []
@@ -317,8 +348,9 @@ def _video_metadata(record: dict, pairings: list, config: dict, errors: list, wa
     if len(candidates) != 1:
         if len(candidates) > 1:
             target = errors if include else warnings
-            target.append({"code": "video_ambiguous", "key": record["key"], "message": f"影片 {basename} 有 {len(candidates)} 個候選"})
+            report("video_ambiguous", f"影片 {basename} 有 {len(candidates)} 個候選", candidates, target)
             return {"status": "ambiguous", "path": "", "fps": None, "frame_count": None}
+        report("video_source_unverified", "依檔名搜尋及原始路徑檢查均找不到影片", candidates)
         return {"status": "source_unverified", "path": "", "fps": None, "frame_count": None}
     path = candidates[0]
     cap = cv2.VideoCapture(str(path))
@@ -329,7 +361,7 @@ def _video_metadata(record: dict, pairings: list, config: dict, errors: list, wa
     finally:
         cap.release()
     if not opened or not math.isfinite(fps) or fps <= 0 or frame_count <= 0:
-        warnings.append({"code": "video_metadata_unavailable", "key": record["key"], "message": f"影片無法提供有效 FPS／總幀數：{basename}"})
+        report("video_metadata_unavailable", f"已找到影片，但無法讀取有效 FPS／總幀數：{path}", candidates)
         return {"status": "metadata_unavailable", "path": str(path), "fps": None, "frame_count": None}
     if record.get("frame") and record["frame"] > frame_count:
         errors.append({"code": "frame_outside_video", "key": record["key"], "message": f"Frame {record['frame']} 超過配對影片總幀數 {frame_count}"})
@@ -610,8 +642,6 @@ def validate_config(config: dict, *, progress=None, cancel=None) -> dict:
         video = _video_metadata(video_record, pairing_rows, config, errors, warnings)
         if fps is None:
             fps = video.get("fps")
-        if video.get("status") == "source_unverified" and not any(w.get("code") == "video_source_unverified" for w in warnings):
-            warnings.append({"code": "video_source_unverified", "message": "未提供影片檔；來源身份未驗證。Pairing 有 FPS／時長時仍用於名目時間與 Frame 範圍核對"})
         if fps is None and record["frame"]:
             warnings.append({"code": "fps_missing", "key": record["key"], "message": "CSV／分析專案沒有 FPS；名目時間未提供"})
         record.update({

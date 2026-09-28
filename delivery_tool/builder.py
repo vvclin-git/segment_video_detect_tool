@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .collage import copy_keyframe, render_collage
 from .config import comparison_overlay_settings, resolve_path
-from .dataset import validate_config
+from .dataset import validate_config, video_search_message
 from .exporters import write_csv, write_html
 from .video_naming import (DEFAULT_VIDEO_FILENAME_TEMPLATE, paired_video_filename_values,
                            render_video_filename_stem, validate_video_filename_template)
@@ -36,6 +36,8 @@ def _video_for_record(record: dict, pairings: list, config: dict, errors: list, 
         return source
     run_id = str(record.get("analysis_link", {}).get("pairing_run_id") or record.get("parsed", {}).get("run_id") or "")
     if not run_id:
+        warnings.append({"code": "missing_video", "key": record["key"], "message": video_search_message(
+            "未取得航次 ID，無法查找交付影片", config, run_id, record.get("camera"), [])})
         return None
     camera = str(record.get("camera", ""))
     paths = []
@@ -51,9 +53,12 @@ def _video_for_record(record: dict, pairings: list, config: dict, errors: list, 
             if label == camera or str(label).endswith(camera[-1:]):
                 paths.append(str(match["path"]))
     if not paths:
+        warnings.append({"code": "missing_video", "key": record["key"], "message": video_search_message(
+            "Pairing 沒有此航次／相機的影片路徑，無法查找交付影片", config, run_id, camera, [])})
         return None
     if len(set(paths)) > 1:
-        errors.append({"code": "video_pairing_ambiguous", "key": record["key"], "message": "航次配對含多個影片來源"})
+        errors.append({"code": "video_pairing_ambiguous", "key": record["key"], "message": video_search_message(
+            "航次配對含多個影片來源", config, run_id, camera, paths)})
         return None
     source_text = paths[0]
     basename = Path(source_text.replace("\\", "/")).name
@@ -70,9 +75,11 @@ def _video_for_record(record: dict, pairings: list, config: dict, errors: list, 
         return candidates[0]
     if len(candidates) > 1:
         target = errors if config.get("include_videos") else warnings
-        target.append({"code": "video_ambiguous", "key": record["key"], "message": f"影片 {basename} 有 {len(candidates)} 個候選"})
+        target.append({"code": "video_ambiguous", "key": record["key"], "message": video_search_message(
+            f"影片 {basename} 有 {len(candidates)} 個候選", config, run_id, camera, paths, candidates)})
     elif config.get("include_videos"):
-        warnings.append({"code": "missing_video", "key": record["key"], "message": f"找不到配對影片 {basename}；影片未打包"})
+        warnings.append({"code": "missing_video", "key": record["key"], "message": video_search_message(
+            f"找不到配對影片 {basename}；影片未打包", config, run_id, camera, paths, candidates)})
     return None
 
 
